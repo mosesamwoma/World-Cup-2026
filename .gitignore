@@ -1,0 +1,23 @@
+# CSV data files
+*.csv
+# But track data folder with .gitkeep
+!data/
+!data/**/.gitkeep
+# Virtual environment
+venv/
+ml_env/
+env/
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+# Jupyter notebooks (optional - some people track these)
+.ipynb_checkpoints/
+# Model files (usually too large)
+*.pkl
+*.joblib
+*.h5
+*.pth
+*.pt
+# Environment variables
+.env
