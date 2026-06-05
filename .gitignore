@@ -1,4 +1,4 @@
-# CSV data files
+*.pdf
 *.csv
 # But track data folder with .gitkeep
 !data/
