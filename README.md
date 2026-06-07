@@ -1,5 +1,5 @@
 # World Cup 2026 Match Predictor
-A probabilistic prediction engine for the FIFA World Cup 2026 that combines machine learning and statistical modeling—XGBoost, Dixon–Coles Poisson, dynamic Elo ratings, and Monte Carlo simulation—to estimate match outcomes and tournament probabilities from data, not guesswork.
+A probabilistic World Cup 2026 prediction engine combining XGBoost, Dixon–Coles Poisson, Elo ratings, and Monte Carlo simulation to estimate match and tournament outcomes from data, not guesswork.
 
 ---
 
@@ -21,6 +21,3 @@ source venv/bin/activate
 
 # Install dependencies
 pip install -r requirements.txt
-
-# Launch the dashboard
-streamlit run src/dashboard/app.py
