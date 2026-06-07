@@ -5,8 +5,10 @@ A machine learning system that predicts FIFA World Cup 2026 match outcomes and t
 ---
 
 ## Run it
+
+```bash
 # Clone the repository
-git clone https://github.com/mosesamwoma/World-Cup-2026.git
+git clone [https://github.com/mosesamwoma/World-Cup-2026.git](https://github.com/mosesamwoma/World-Cup-2026.git)
 cd World-Cup-2026
 
 # Create virtual environment
@@ -23,5 +25,3 @@ pip install -r requirements.txt
 
 # Launch the dashboard
 streamlit run src/dashboard/app.py
-
----
