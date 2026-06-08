@@ -1,5 +1,6 @@
 # ============================================================
 #  Dixon-Coles Poisson model with rho low-score correction
+#  Vectorized for speed
 # ============================================================
 import numpy as np
 from scipy.optimize import minimize
@@ -27,7 +28,6 @@ def score_prob(ga: int, gb: int, lam_a: float, lam_b: float, rho: float) -> floa
 
 
 def score_matrix(lam_a: float, lam_b: float, rho: float, max_goals: int = MAX_GOALS) -> np.ndarray:
-    """Full (max_goals+1) × (max_goals+1) score probability matrix."""
     m = np.zeros((max_goals + 1, max_goals + 1))
     for i in range(max_goals + 1):
         for j in range(max_goals + 1):
@@ -36,7 +36,6 @@ def score_matrix(lam_a: float, lam_b: float, rho: float, max_goals: int = MAX_GO
 
 
 def match_probs(matrix: np.ndarray) -> dict:
-    """Aggregate score matrix → win/draw/loss probabilities."""
     win_a = float(np.sum(np.tril(matrix, -1)))
     draw  = float(np.sum(np.diag(matrix)))
     win_b = float(np.sum(np.triu(matrix, 1)))
@@ -49,22 +48,45 @@ def match_probs(matrix: np.ndarray) -> dict:
 
 
 def neg_log_likelihood(params, home_teams, away_teams, home_goals, away_goals, weights, teams):
-    """Negative log-likelihood for Dixon-Coles parameter fitting."""
+    """
+    Vectorized negative log-likelihood — no Python loop over matches.
+    """
     n = len(teams)
-    attack  = dict(zip(teams, params[:n]))
-    defence = dict(zip(teams, params[n:2*n]))
+    team_idx = {t: i for i, t in enumerate(teams)}
+
+    attack   = params[:n]
+    defence  = params[n:2*n]
     home_adv = params[2*n]
     rho      = params[2*n + 1]
 
-    ll = 0.0
-    for i in range(len(home_teams)):
-        ht, at = home_teams[i], away_teams[i]
-        lam_h = np.exp(attack[ht] + defence[at] + home_adv)
-        lam_a = np.exp(attack[at] + defence[ht])
-        p = (score_prob(home_goals[i], away_goals[i], lam_h, lam_a, rho)
-             * weights[i])
-        if p > 0:
-            ll += np.log(p)
+    # Vectorized lambda computation
+    hi = np.array([team_idx[t] for t in home_teams])
+    ai = np.array([team_idx[t] for t in away_teams])
+
+    lam_h = np.exp(attack[hi] + defence[ai] + home_adv)
+    lam_a = np.exp(attack[ai] + defence[hi])
+
+    hg = np.array(home_goals)
+    ag = np.array(away_goals)
+    w  = np.array(weights)
+
+    # Vectorized Poisson PMF
+    from scipy.special import gammaln
+    def poisson_pmf(k, lam):
+        return np.exp(k * np.log(np.clip(lam, 1e-10, None)) - lam - gammaln(k + 1))
+
+    p_h = poisson_pmf(hg, lam_h)
+    p_a = poisson_pmf(ag, lam_a)
+
+    # Rho correction — only affects scores 0-0, 1-0, 0-1, 1-1
+    rho_corr = np.ones(len(hg))
+    rho_corr[(hg == 0) & (ag == 0)] = 1 - lam_h[(hg == 0) & (ag == 0)] * lam_a[(hg == 0) & (ag == 0)] * rho
+    rho_corr[(hg == 1) & (ag == 0)] = 1 + lam_a[(hg == 1) & (ag == 0)] * rho
+    rho_corr[(hg == 0) & (ag == 1)] = 1 + lam_h[(hg == 0) & (ag == 1)] * rho
+    rho_corr[(hg == 1) & (ag == 1)] = 1 - rho
+
+    p = p_h * p_a * np.clip(rho_corr, 1e-10, None)
+    ll = np.sum(w * np.log(np.clip(p, 1e-10, None)))
     return -ll
 
 
@@ -72,20 +94,26 @@ def fit(df, weight_col: str = "final_weight"):
     """
     Fit Dixon-Coles model to match dataframe.
     df needs: home_team, away_team, home_score, away_score, <weight_col>
-    Returns dict of fitted params.
     """
+    # Filter to valid completed matches only
+    df = df.dropna(subset=["home_score", "away_score"]).copy()
+    df["home_score"] = df["home_score"].astype(int)
+    df["away_score"] = df["away_score"].astype(int)
+
     teams = sorted(set(df["home_team"]) | set(df["away_team"]))
     n = len(teams)
 
-    x0 = np.zeros(2 * n + 2)   # attack, defence, home_adv, rho
-    x0[2*n] = 0.1               # home advantage init
-    x0[2*n+1] = -0.1            # rho init (negative for low-score correction)
+    print(f"  Fitting Dixon-Coles on {len(df):,} matches, {n} teams...")
+
+    x0 = np.zeros(2 * n + 2)
+    x0[2*n]     =  0.1    # home advantage
+    x0[2*n + 1] = -0.1    # rho
 
     bounds = (
-        [(-3, 3)] * n +         # attack
-        [(-3, 3)] * n +         # defence
-        [(0, 1)] +              # home advantage
-        [(-1, 0)]               # rho (must be negative for valid correction)
+        [(-3, 3)] * n +   # attack
+        [(-3, 3)] * n +   # defence
+        [(0, 1)]  +       # home advantage
+        [(-1, 0)]         # rho
     )
 
     result = minimize(
@@ -101,15 +129,18 @@ def fit(df, weight_col: str = "final_weight"):
         ),
         method="L-BFGS-B",
         bounds=bounds,
+        options={"maxiter": 200, "ftol": 1e-9},
     )
 
     params = result.x
+    print(f"  Converged: {result.success} — {result.message}")
+
     return {
-        "teams":     teams,
-        "attack":    dict(zip(teams, params[:n])),
-        "defence":   dict(zip(teams, params[n:2*n])),
-        "home_adv":  params[2*n],
-        "rho":       params[2*n+1],
+        "teams":    teams,
+        "attack":   dict(zip(teams, params[:n])),
+        "defence":  dict(zip(teams, params[n:2*n])),
+        "home_adv": float(params[2*n]),
+        "rho":      float(params[2*n + 1]),
     }
 
 

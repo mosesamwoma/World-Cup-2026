@@ -1,87 +1,124 @@
 # ============================================================
-#  Feature engineering pipeline
+#  Feature engineering pipeline — vectorized (fast)
 # ============================================================
 import pandas as pd
 import numpy as np
 from src.preprocessing.normalize import get_confederation
 
 
-def form_stats(df: pd.DataFrame, team: str, before_date, n: int) -> dict:
-    """Recent form for a team in the last n matches before a date."""
-    mask = (
-        ((df["home_team"] == team) | (df["away_team"] == team)) &
-        (df["date"] < before_date)
-    )
-    recent = df[mask].sort_values("date").tail(n)
+def _compute_form(df: pd.DataFrame, n: int) -> pd.DataFrame:
+    """
+    Vectorized form stats for every team before every match.
+    Returns df with columns: form{n}_ppg_{home|away}, form{n}_gf_{home|away},
+                              form{n}_ga_{home|away}, form{n}_gd_{home|away}
+    """
+    df = df.sort_values("date").reset_index(drop=True)
 
-    pts, gf, ga = [], [], []
-    for _, r in recent.iterrows():
-        if r["home_team"] == team:
-            gf.append(r["home_score"]); ga.append(r["away_score"])
-            pts.append(3 if r["home_score"] > r["away_score"] else
-                       1 if r["home_score"] == r["away_score"] else 0)
-        else:
-            gf.append(r["away_score"]); ga.append(r["home_score"])
-            pts.append(3 if r["away_score"] > r["home_score"] else
-                       1 if r["away_score"] == r["home_score"] else 0)
+    # Build long format: one row per team per match
+    home = df[["date", "home_team", "away_team", "home_score", "away_score"]].copy()
+    home.columns = ["date", "team", "opp", "gf", "ga"]
+    home["pts"] = np.where(home.gf > home.ga, 3, np.where(home.gf == home.ga, 1, 0))
 
-    if not pts:
-        return {"ppg": 0.0, "gf": 0.0, "ga": 0.0, "gd": 0.0}
+    away = df[["date", "away_team", "home_team", "away_score", "home_score"]].copy()
+    away.columns = ["date", "team", "opp", "gf", "ga"]
+    away["pts"] = np.where(away.gf > away.ga, 3, np.where(away.gf == away.ga, 1, 0))
 
-    return {
-        "ppg": round(np.mean(pts), 4),
-        "gf":  round(np.mean(gf),  4),
-        "ga":  round(np.mean(ga),  4),
-        "gd":  round(np.mean(gf) - np.mean(ga), 4),
-    }
+    long = pd.concat([home, away], ignore_index=True).sort_values("date")
+
+    # Rolling stats per team — shift(1) so we never include the current match
+    long = long.sort_values(["team", "date"])
+    grp  = long.groupby("team")
+
+    roll_pts = grp["pts"].transform(lambda x: x.shift(1).rolling(n, min_periods=1).mean())
+    roll_gf  = grp["gf"].transform(lambda x: x.shift(1).rolling(n, min_periods=1).mean())
+    roll_ga  = grp["ga"].transform(lambda x: x.shift(1).rolling(n, min_periods=1).mean())
+    roll_gd  = roll_gf - roll_ga
+
+    long[f"form{n}_ppg"] = roll_pts.fillna(0)
+    long[f"form{n}_gf"]  = roll_gf.fillna(0)
+    long[f"form{n}_ga"]  = roll_ga.fillna(0)
+    long[f"form{n}_gd"]  = roll_gd.fillna(0)
+
+    # Split back to home and away
+    home_form = long[long["team"].isin(df["home_team"])].copy()
+    away_form = long[long["team"].isin(df["away_team"])].copy()
+
+    # Merge home form
+    home_cols = home_form[["date", "team", f"form{n}_ppg", f"form{n}_gf",
+                            f"form{n}_ga", f"form{n}_gd"]].copy()
+    home_cols.columns = ["date", "home_team",
+                         f"form{n}_ppg_home", f"form{n}_gf_home",
+                         f"form{n}_ga_home",  f"form{n}_gd_home"]
+    home_cols = home_cols.drop_duplicates(["date", "home_team"])
+
+    away_cols = away_form[["date", "team", f"form{n}_ppg", f"form{n}_gf",
+                            f"form{n}_ga", f"form{n}_gd"]].copy()
+    away_cols.columns = ["date", "away_team",
+                         f"form{n}_ppg_away", f"form{n}_gf_away",
+                         f"form{n}_ga_away",  f"form{n}_gd_away"]
+    away_cols = away_cols.drop_duplicates(["date", "away_team"])
+
+    df = df.merge(home_cols, on=["date", "home_team"], how="left")
+    df = df.merge(away_cols, on=["date", "away_team"], how="left")
+
+    return df
 
 
 def build_feature_matrix(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Build the full feature matrix from the weighted + Elo-annotated df.
-    df must have: date, home_team, away_team, home_score, away_score,
-                  elo_home_pre, elo_away_pre, elo_diff,
-                  competition_weight, neutral, is_host_home, is_host_away
+    Build full feature matrix from weighted + Elo-annotated dataframe.
+    Vectorized — runs in seconds instead of hours.
     """
-    rows = []
-    for _, row in df.iterrows():
-        home, away = row["home_team"], row["away_team"]
-        dt = row["date"]
+    df = df.sort_values("date").reset_index(drop=True)
 
-        f5h  = form_stats(df, home, dt, 5)
-        f5a  = form_stats(df, away, dt, 5)
-        f10h = form_stats(df, home, dt, 10)
-        f10a = form_stats(df, away, dt, 10)
+    # Compute form for last 5 and last 10 matches
+    print("  Computing form (last 5)...")
+    df = _compute_form(df, 5)
+    print("  Computing form (last 10)...")
+    df = _compute_form(df, 10)
 
-        actual = (1 if row["home_score"] > row["away_score"] else
-                  0 if row["home_score"] == row["away_score"] else -1)
+    # Confederation one-hot
+    df["confederation_home"] = df["home_team"].apply(get_confederation)
+    df["confederation_away"] = df["away_team"].apply(get_confederation)
 
-        rows.append({
-            "date":              dt,
-            "home_team":         home,
-            "away_team":         away,
-            "elo_home":          row["elo_home_pre"],
-            "elo_away":          row["elo_away_pre"],
-            "elo_diff":          row["elo_diff"],
-            "form5_ppg_home":    f5h["ppg"],
-            "form5_gf_home":     f5h["gf"],
-            "form5_ga_home":     f5h["ga"],
-            "form5_ppg_away":    f5a["ppg"],
-            "form5_gf_away":     f5a["gf"],
-            "form5_ga_away":     f5a["ga"],
-            "form10_ppg_home":   f10h["ppg"],
-            "form10_gd_home":    f10h["gd"],
-            "form10_ppg_away":   f10a["ppg"],
-            "form10_gd_away":    f10a["gd"],
-            "neutral":           int(row["neutral"]),
-            "is_host_home":      int(row.get("is_host_home", 0)),
-            "is_host_away":      int(row.get("is_host_away", 0)),
-            "comp_weight":       row["competition_weight"],
-            "confederation_home": get_confederation(home),
-            "confederation_away": get_confederation(away),
-            "home_score":        row["home_score"],
-            "away_score":        row["away_score"],
-            "result":            actual,      # 1=home win, 0=draw, -1=away win
-        })
+    # Result label
+    df["result"] = np.where(
+        df["home_score"] > df["away_score"], 1,
+        np.where(df["home_score"] == df["away_score"], 0, -1)
+    )
 
-    return pd.DataFrame(rows)
+    # Select and rename final feature columns
+    feature_cols = [
+        "date", "home_team", "away_team",
+        "elo_home_pre", "elo_away_pre", "elo_diff",
+        "form5_ppg_home",  "form5_gf_home",  "form5_ga_home",
+        "form5_ppg_away",  "form5_gf_away",  "form5_ga_away",
+        "form10_ppg_home", "form10_gd_home",
+        "form10_ppg_away", "form10_gd_away",
+        "neutral", "is_host_home", "is_host_away",
+        "competition_weight",
+        "confederation_home", "confederation_away",
+        "home_score", "away_score", "result",
+    ]
+
+    # Rename elo cols to match FEATURE_COLS in xgboost_model.py
+    df = df.rename(columns={
+        "elo_home_pre":      "elo_home",
+        "elo_away_pre":      "elo_away",
+        "competition_weight": "comp_weight",
+    })
+
+    feature_cols = [c.replace("elo_home_pre", "elo_home")
+                     .replace("elo_away_pre", "elo_away")
+                     .replace("competition_weight", "comp_weight")
+                    for c in feature_cols]
+
+    available = [c for c in feature_cols if c in df.columns]
+    result_df = df[available].copy()
+
+    # Fill any remaining NaN form values with 0
+    form_cols = [c for c in result_df.columns if "form" in c]
+    result_df[form_cols] = result_df[form_cols].fillna(0)
+
+    print(f"  Feature matrix built: {result_df.shape}")
+    return result_df
