@@ -2,31 +2,6 @@
 
 > A professional-grade probabilistic forecasting platform for FIFA World Cup 2026 — built with XGBoost, Dixon-Coles Poisson modeling, dynamic Elo ratings, and Monte Carlo tournament simulation.
 
-![Python](https://img.shields.io/badge/Python-3.10%2B-blue) ![XGBoost](https://img.shields.io/badge/XGBoost-2.x-orange) ![Streamlit](https://img.shields.io/badge/Streamlit-dashboard-red) ![License](https://img.shields.io/badge/License-MIT-green)
-
----
-
-## Table of Contents
-
-- [Project Overview](#project-overview)
-- [Features](#features)
-- [System Architecture](#system-architecture)
-- [Project Structure](#project-structure)
-- [Installation](#installation)
-- [Data Sources](#data-sources)
-- [Data Preprocessing](#data-preprocessing)
-- [Rating System](#rating-system)
-- [Feature Engineering](#feature-engineering)
-- [Expected Goals Model](#expected-goals-model)
-- [Dixon-Coles Model](#dixon-coles-model)
-- [Tournament Simulation](#tournament-simulation)
-- [Monte Carlo Engine](#monte-carlo-engine)
-- [Ensemble Forecast Layer](#ensemble-forecast-layer)
-- [Validation Framework](#validation-framework)
-- [Streamlit Dashboard](#streamlit-dashboard)
-- [Output Format](#output-format)
-- [Roadmap](#roadmap)
-
 ---
 
 ## Project Overview
@@ -106,69 +81,6 @@ Historical Match Data (1950–2026)
 
 ---
 
-## Project Structure
-
-```
-wc2026-forecasting/
-├── data/
-│   ├── raw/
-│   │   ├── results.csv                  # martj42 international results dataset
-│   │   └── wc2026_fixtures.csv          # 2026 official fixtures
-│   ├── processed/
-│   │   ├── matches_weighted.csv         # time + competition weighted matches
-│   │   ├── elo_ratings.csv              # historical Elo per team per match
-│   │   └── features.csv                 # engineered feature matrix
-│   └── external/
-│       └── market_odds.csv              # betting market calibration data
-│
-├── src/
-│   ├── preprocessing/
-│   │   ├── normalize.py                 # team name & competition standardization
-│   │   └── weighting.py                 # temporal decay + competition weights
-│   │
-│   ├── ratings/
-│   │   └── elo.py                       # dynamic Elo rating engine
-│   │
-│   ├── features/
-│   │   └── engineer.py                  # feature extraction pipeline
-│   │
-│   ├── models/
-│   │   ├── dixon_coles.py               # Dixon-Coles Poisson model with ρ correction
-│   │   ├── xgboost_model.py             # XGBoost outcome classifier
-│   │   └── ensemble.py                  # weighted ensemble combiner
-│   │
-│   ├── simulation/
-│   │   ├── match_engine.py              # single match simulator
-│   │   ├── group_stage.py               # group stage + FIFA tiebreakers
-│   │   ├── knockout.py                  # knockout bracket simulator
-│   │   ├── third_place.py               # 2026 best third-place slot logic
-│   │   └── monte_carlo.py               # full tournament Monte Carlo runner
-│   │
-│   └── dashboard/
-│       └── app.py                       # Streamlit dashboard
-│
-├── notebooks/
-│   ├── 01_eda.ipynb
-│   ├── 02_elo_validation.ipynb
-│   ├── 03_dixon_coles_fit.ipynb
-│   ├── 04_xgboost_training.ipynb
-│   └── 05_backtest_results.ipynb
-│
-├── models/
-│   ├── dixon_coles_params.pkl
-│   └── xgboost_model.pkl
-│
-├── outputs/
-│   ├── match_forecasts/
-│   ├── group_probabilities/
-│   └── tournament_probabilities/
-│
-├── requirements.txt
-└── README.md
-```
-
----
-
 ## Installation
 
 ### Requirements
@@ -180,7 +92,7 @@ wc2026-forecasting/
 
 ```bash
 # Clone the repository
-git clone https://github.com/mosesamwoma/wc2026-forecasting.git
+git clone https://github.com/mosesamwoma/World-Cup-2026.git
 cd wc2026-forecasting
 
 # Create virtual environment
@@ -773,16 +685,3 @@ Spain         | 97.5% | 74.0%| 57.8%| 43.5%| 30.6%| 17.9% |  9.1%
 - [ ] Daily forecast report generation (PDF/HTML)
 
 ---
-
-## License
-
-MIT License — see [LICENSE](LICENSE) for details.
-
----
-
-## Author
-
-**Musa Amwoma**
-Data Science · Meru University of Science and Technology
-GitHub: [@mosesamwoma](https://github.com/mosesamwoma)
-Portfolio: [iammoses.vercel.app](https://iammoses.vercel.app)
