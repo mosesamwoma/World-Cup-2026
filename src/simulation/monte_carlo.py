@@ -23,12 +23,10 @@ def run(
     """
     Run full Monte Carlo simulation.
 
-    groups:  {"A": [team1, team2, team3, team4], "B": [...], ...}
-    lambdas: {(team_a, team_b): (lam_a, lam_b)}  precomputed expected goals
+    groups:      {"A": [team1, team2, team3, team4], ...}
+    lambdas:     {(team_a, team_b): (lam_a, lam_b)}
     elo_ratings: {team: float}
-    rho:     Dixon-Coles rho parameter
-
-    Returns: {team: {stage: probability}}
+    rho:         Dixon-Coles rho parameter
     """
     all_teams = [t for group in groups.values() for t in group]
     counts = {team: {s: 0 for s in ALL_STAGES} for team in all_teams}
@@ -37,9 +35,9 @@ def run(
 
     for _ in iterator:
         third_place_teams = []
+        qualified = []
 
         # ── Group stage ──────────────────────────────────────
-        qualified = []    # top 2 from each group
         for group_name, teams in groups.items():
             standings = simulate_group(teams, lambdas, rho)
             for entry in standings:
@@ -63,22 +61,24 @@ def run(
         for team in r32_teams:
             counts[team]["r32"] += 1
 
-        # ── Build R32 bracket (simplified sequential pairing) ─
-        r32_bracket = [(r32_teams[i], r32_teams[i+1]) for i in range(0, 32, 2)]
+        # ── R32 bracket ──────────────────────────────────────
+        r32_bracket = [(r32_teams[i], r32_teams[i + 1]) for i in range(0, 32, 2)]
 
         # ── Knockout rounds ──────────────────────────────────
-        ko_results = simulate_full_knockout(r32_bracket, lambdas, elo_ratings, rho)
+        # FIXED: simulate_full_knockout now returns (stage_tracker, champion)
+        ko_tracker, champion = simulate_full_knockout(r32_bracket, lambdas, elo_ratings, rho)
 
         stage_map = {"R32": "r32", "R16": "r16", "QF": "qf", "SF": "sf", "Final": "final"}
-        for team, rounds in ko_results.items():
+        for team, rounds in ko_tracker.items():
             for r in rounds:
-                if r in stage_map:
-                    counts[team][stage_map[r]] += 1
-            # Champion = team that reached Final AND won
-            if "Final" in rounds and rounds[-1] == "Final":
-                counts[team]["champion"] += 1
+                mapped = stage_map.get(r)
+                if mapped:
+                    counts[team][mapped] += 1
 
-    # Convert to probabilities
+        # FIXED: champion is explicitly returned — no fragile list-tail logic
+        if champion:
+            counts[champion]["champion"] += 1
+
     return {
         team: {s: round(counts[team][s] / n_simulations, 6) for s in ALL_STAGES}
         for team in all_teams

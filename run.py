@@ -16,14 +16,17 @@ def main():
     args = parser.parse_args()
 
     if args.mode == "train":
-        print("Training models... (implement pipeline here)")
+        from src.pipeline import run_pipeline
+        run_pipeline()
 
     elif args.mode == "simulate":
-        print(f"Running Monte Carlo with {args.n:,} iterations...")
+        from src.pipeline import run_simulation
+        run_simulation(n=args.n)
 
     elif args.mode == "dashboard":
         import subprocess, sys
-        subprocess.run([sys.executable, "-m", "streamlit", "run", "src/dashboard/app.py"])
+        # FIXED: was pointing to src/dashboard/app.py — wrong path
+        subprocess.run([sys.executable, "-m", "streamlit", "run", "dashboard/app.py"])
 
 
 if __name__ == "__main__":
