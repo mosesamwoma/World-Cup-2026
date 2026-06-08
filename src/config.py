@@ -3,22 +3,33 @@
 # ============================================================
 import os
 from pathlib import Path
-from dotenv import load_dotenv
 
-load_dotenv()
+# FIXED: dotenv is optional — don't crash if not installed
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
 ROOT = Path(__file__).parent.parent
 
-# Paths
+# Paths — FIXED: mkdir so runtime never crashes on missing dirs
 DATA_RAW        = ROOT / "data" / "raw"
 DATA_PROCESSED  = ROOT / "data" / "processed"
 DATA_EXTERNAL   = ROOT / "data" / "external"
 MODELS_DIR      = ROOT / "models"
 OUTPUTS_DIR     = ROOT / "outputs"
 
+# Create dirs at import time so nothing crashes
+for _dir in [DATA_RAW, DATA_PROCESSED, DATA_EXTERNAL, MODELS_DIR,
+             OUTPUTS_DIR / "match_forecasts",
+             OUTPUTS_DIR / "group_probabilities",
+             OUTPUTS_DIR / "tournament_probabilities"]:
+    _dir.mkdir(parents=True, exist_ok=True)
+
 # Elo
 BASE_ELO        = 1500
-HOME_ADVANTAGE  = 65       # Elo points for non-neutral home team
+HOME_ADVANTAGE  = 65
 K_FACTOR_BASE   = 40
 
 # Temporal decay
@@ -45,9 +56,9 @@ ENSEMBLE_WEIGHTS = {
 
 # Simulation
 N_SIMULATIONS   = int(os.getenv("N_SIMULATIONS", 100_000))
-MAX_GOALS       = 8        # max goals per team in score matrix
+MAX_GOALS       = 8
 
 # 2026 format
 N_GROUPS        = 12
 TEAMS_PER_GROUP = 4
-THIRD_PLACE_SLOTS = 8      # best third-place teams advancing to R32
+THIRD_PLACE_SLOTS = 8

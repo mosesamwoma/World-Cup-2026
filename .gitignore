@@ -13,11 +13,5 @@ __pycache__/
 *.pyo
 # Jupyter notebooks (optional - some people track these)
 .ipynb_checkpoints/
-# Model files (usually too large)
-*.pkl
-*.joblib
-*.h5
-*.pth
-*.pt
 # Environment variables
 .env
