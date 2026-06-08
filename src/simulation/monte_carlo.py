@@ -8,7 +8,6 @@ from src.simulation.group_stage import simulate_group
 from src.simulation.third_place import select_best_third
 from src.simulation.knockout import simulate_full_knockout
 
-
 ALL_STAGES = ["group", "r32", "r16", "qf", "sf", "final", "champion"]
 
 
@@ -65,7 +64,6 @@ def run(
         r32_bracket = [(r32_teams[i], r32_teams[i + 1]) for i in range(0, 32, 2)]
 
         # ── Knockout rounds ──────────────────────────────────
-        # FIXED: simulate_full_knockout now returns (stage_tracker, champion)
         ko_tracker, champion = simulate_full_knockout(r32_bracket, lambdas, elo_ratings, rho)
 
         stage_map = {"R32": "r32", "R16": "r16", "QF": "qf", "SF": "sf", "Final": "final"}
@@ -75,7 +73,6 @@ def run(
                 if mapped:
                     counts[team][mapped] += 1
 
-        # FIXED: champion is explicitly returned — no fragile list-tail logic
         if champion:
             counts[champion]["champion"] += 1
 

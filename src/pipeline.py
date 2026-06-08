@@ -131,31 +131,32 @@ def run_pipeline():
 
 
 def run_simulation(n: int = 10_000):
-    """Full tournament Monte Carlo simulation."""
+    """Full tournament Monte Carlo simulation with ensemble forecasts."""
     print(f"Running Monte Carlo simulation ({n:,} iterations)...")
 
-    dc_params  = joblib.load(MODELS_DIR / "dixon_coles_params.pkl")
-    ratings_df = pd.read_csv(DATA_PROCESSED / "elo_ratings.csv")
+    dc_params   = joblib.load(MODELS_DIR / "dixon_coles_params.pkl")
+    xgb_model   = xgboost_model.load()
+    ratings_df  = pd.read_csv(DATA_PROCESSED / "elo_ratings.csv")
     elo_ratings = dict(zip(ratings_df["team"], ratings_df["elo"]))
 
-    # FIXED: groups derived from fixture data — not hardcoded
     groups = get_2026_groups()
 
-    # Build lambda lookup from fitted Dixon-Coles attack/defence params
+    # Build lambda lookup + ensemble probabilities per matchup
     lambdas = {}
     all_teams = [t for g in groups.values() for t in g]
+
+    from src.models.ensemble import combine
+    from src.ratings.elo import expected_score
+
     for ta in all_teams:
         for tb in all_teams:
-            if ta != tb:
-                lam_a = np.exp(
-                    dc_params["attack"].get(ta, 0) +
-                    dc_params["defence"].get(tb, 0)
-                )
-                lam_b = np.exp(
-                    dc_params["attack"].get(tb, 0) +
-                    dc_params["defence"].get(ta, 0)
-                )
-                lambdas[(ta, tb)] = (lam_a, lam_b)
+            if ta == tb:
+                continue
+
+            # Dixon-Coles lambdas
+            lam_a = np.exp(dc_params["attack"].get(ta, 0) + dc_params["defence"].get(tb, 0))
+            lam_b = np.exp(dc_params["attack"].get(tb, 0) + dc_params["defence"].get(ta, 0))
+            lambdas[(ta, tb)] = (lam_a, lam_b)
 
     from src.simulation.monte_carlo import run as mc_run
     results = mc_run(

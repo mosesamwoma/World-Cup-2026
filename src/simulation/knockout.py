@@ -1,85 +1,54 @@
 # ============================================================
-#  Monte Carlo tournament simulation engine
+#  Knockout bracket simulator (R32 → Final)
 # ============================================================
-import numpy as np
-from tqdm import tqdm
-from src.config import N_SIMULATIONS
-from src.simulation.group_stage import simulate_group
-from src.simulation.third_place import select_best_third
-from src.simulation.knockout import simulate_full_knockout
+from src.simulation.match_engine import simulate_knockout
+
+ROUNDS = ["R32", "R16", "QF", "SF", "Final"]
 
 
-ALL_STAGES = ["group", "r32", "r16", "qf", "sf", "final", "champion"]
-
-
-def run(
-    groups: dict,
+def simulate_bracket(
+    bracket: list,
     lambdas: dict,
     elo_ratings: dict,
     rho: float,
-    n_simulations: int = N_SIMULATIONS,
-    verbose: bool = True,
-) -> dict:
+    stage_tracker: dict,
+    round_name: str,
+) -> list:
+    """Simulate one knockout round. Returns list of winners."""
+    winners = []
+    for team_a, team_b in bracket:
+        lam_a = lambdas.get((team_a, team_b), (1.2, 1.0))[0]
+        lam_b = lambdas.get((team_a, team_b), (1.2, 1.0))[1]
+        winner = simulate_knockout(
+            team_a, team_b,
+            lam_a, lam_b, rho,
+            elo_ratings.get(team_a, 1500),
+            elo_ratings.get(team_b, 1500),
+        )
+        stage_tracker[winner].append(round_name)
+        winners.append(winner)
+    return winners
+
+
+def simulate_full_knockout(
+    r32_bracket: list,
+    lambdas: dict,
+    elo_ratings: dict,
+    rho: float,
+) -> tuple:
     """
-    Run full Monte Carlo simulation.
-
-    groups:      {"A": [team1, team2, team3, team4], ...}
-    lambdas:     {(team_a, team_b): (lam_a, lam_b)}
-    elo_ratings: {team: float}
-    rho:         Dixon-Coles rho parameter
+    Run complete knockout tree from R32 to champion.
+    Returns (tracker dict, champion string).
     """
-    all_teams = [t for group in groups.values() for t in group]
-    counts = {team: {s: 0 for s in ALL_STAGES} for team in all_teams}
+    tracker = {team: [] for pair in r32_bracket for team in pair}
+    round_pairs = r32_bracket
+    champion = None
 
-    iterator = tqdm(range(n_simulations), desc="Simulating") if verbose else range(n_simulations)
+    for round_name in ROUNDS:
+        winners = simulate_bracket(round_pairs, lambdas, elo_ratings, rho, tracker, round_name)
+        if round_name == "Final":
+            champion = winners[0] if winners else None
+            break
+        round_pairs = [(winners[i], winners[i + 1]) for i in range(0, len(winners), 2)]
 
-    for _ in iterator:
-        third_place_teams = []
-        qualified = []
-
-        # ── Group stage ──────────────────────────────────────
-        for group_name, teams in groups.items():
-            standings = simulate_group(teams, lambdas, rho)
-            for entry in standings:
-                counts[entry["team"]]["group"] += 1
-                if entry["pos"] <= 2:
-                    qualified.append(entry["team"])
-                elif entry["pos"] == 3:
-                    third_place_teams.append({
-                        "team":  entry["team"],
-                        "group": group_name,
-                        "pts":   entry["pts"],
-                        "gd":    entry["gd"],
-                        "gf":    entry["gf"],
-                        "fp":    entry.get("fp", 0),
-                    })
-
-        # ── Best third-place ─────────────────────────────────
-        best_third = [t["team"] for t in select_best_third(third_place_teams)]
-        r32_teams  = qualified + best_third
-
-        for team in r32_teams:
-            counts[team]["r32"] += 1
-
-        # ── R32 bracket ──────────────────────────────────────
-        r32_bracket = [(r32_teams[i], r32_teams[i + 1]) for i in range(0, 32, 2)]
-
-        # ── Knockout rounds ──────────────────────────────────
-        # FIXED: simulate_full_knockout now returns (stage_tracker, champion)
-        ko_tracker, champion = simulate_full_knockout(r32_bracket, lambdas, elo_ratings, rho)
-
-        stage_map = {"R32": "r32", "R16": "r16", "QF": "qf", "SF": "sf", "Final": "final"}
-        for team, rounds in ko_tracker.items():
-            for r in rounds:
-                mapped = stage_map.get(r)
-                if mapped:
-                    counts[team][mapped] += 1
-
-        # FIXED: champion is explicitly returned — no fragile list-tail logic
-        if champion:
-            counts[champion]["champion"] += 1
-
-    return {
-        team: {s: round(counts[team][s] / n_simulations, 6) for s in ALL_STAGES}
-        for team in all_teams
-    }
+    return tracker, champion
