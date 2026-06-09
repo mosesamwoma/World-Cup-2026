@@ -25,8 +25,6 @@ def load_raw() -> pd.DataFrame:
     df["is_host_home"] = 0
     df["is_host_away"] = 0
 
-    # FIXED: drop rows with no scores (future fixtures like WC 2026 group games)
-    # keeping them would corrupt Elo history and feature engineering
     df = df.dropna(subset=["home_score", "away_score"]).copy()
     df["home_score"] = df["home_score"].astype(int)
     df["away_score"] = df["away_score"].astype(int)
@@ -39,11 +37,9 @@ def get_2026_groups() -> dict:
     """
     Derive WC 2026 groups directly from results.csv fixtures.
     Uses round-robin structure — 4 teams that all play each other = 1 group.
-    This avoids hardcoding and stays correct if fixture data updates.
     """
     df = pd.read_csv(DATA_RAW / "results.csv", parse_dates=["date"])
 
-    # Future WC 2026 group stage fixtures = FIFA World Cup 2026 with no scores yet
     fixtures = df[
         (df["tournament"] == "FIFA World Cup") &
         (df["date"].dt.year == 2026) &
@@ -53,7 +49,6 @@ def get_2026_groups() -> dict:
     fixtures["home_team"] = fixtures["home_team"].apply(normalize_team)
     fixtures["away_team"] = fixtures["away_team"].apply(normalize_team)
 
-    # Build set of all matchups
     played = set()
     for _, r in fixtures.iterrows():
         played.add(frozenset([r.home_team, r.away_team]))
@@ -101,7 +96,6 @@ def run_pipeline():
     print(f"Feature matrix: {features.shape}")
 
     print("\n── Step 4: Fitting Dixon-Coles model ──")
-    # Use matches from 2000 onwards — older data adds noise, low relevance weight anyway
     df_fit = df[df["date"] >= "2000-01-01"].copy()
     df_fit["final_weight"] = df_fit.apply(
         lambda r: final_weight(r["date"].date(), r["competition_norm"]), axis=1
@@ -130,8 +124,12 @@ def run_pipeline():
     print("\n✅ Pipeline complete. Models saved to models/")
 
 
-def run_simulation(n: int = 10_000):
+def run_simulation(n: int = 100_000):
     """Full tournament Monte Carlo simulation with ensemble forecasts."""
+    from simulation.monte_carlo import run as mc_run          # FIXED: new simulation/ folder
+    from src.models.ensemble import combine
+    from src.models.dixon_coles import score_matrix, match_probs
+
     print(f"Running Monte Carlo simulation ({n:,} iterations)...")
 
     dc_params   = joblib.load(MODELS_DIR / "dixon_coles_params.pkl")
@@ -139,26 +137,69 @@ def run_simulation(n: int = 10_000):
     ratings_df  = pd.read_csv(DATA_PROCESSED / "elo_ratings.csv")
     elo_ratings = dict(zip(ratings_df["team"], ratings_df["elo"]))
 
-    groups = get_2026_groups()
-
-    # Build lambda lookup + ensemble probabilities per matchup
-    lambdas = {}
+    groups    = get_2026_groups()
     all_teams = [t for g in groups.values() for t in g]
 
-    from src.models.ensemble import combine
-    from src.ratings.elo import expected_score
+    # ── Build lambdas + ensemble probabilities ───────────────
+    lambdas      = {}
+    ensemble_log = []
 
+    print("Building ensemble match probabilities...")
     for ta in all_teams:
         for tb in all_teams:
             if ta == tb:
                 continue
 
-            # Dixon-Coles lambdas
+            # Dixon-Coles expected goals
             lam_a = np.exp(dc_params["attack"].get(ta, 0) + dc_params["defence"].get(tb, 0))
             lam_b = np.exp(dc_params["attack"].get(tb, 0) + dc_params["defence"].get(ta, 0))
             lambdas[(ta, tb)] = (lam_a, lam_b)
 
-    from src.simulation.monte_carlo import run as mc_run
+            # Dixon-Coles match probabilities
+            dc_probs = match_probs(score_matrix(lam_a, lam_b, dc_params["rho"]))
+
+            # Elo match probabilities
+            elo_a = elo_ratings.get(ta, 1500)
+            elo_b = elo_ratings.get(tb, 1500)
+            exp_a = 1 / (1 + 10 ** ((elo_b - elo_a) / 400))
+            elo_probs = {
+                "win_a": round(exp_a * 0.72, 6),
+                "draw":  0.26,
+                "win_b": round((1 - exp_a) * 0.72, 6),
+            }
+
+            # XGBoost match probabilities
+            feat = {
+                "elo_diff":        elo_a - elo_b,
+                "form5_ppg_home":  1.5, "form5_gf_home": 1.4, "form5_ga_home": 1.0,
+                "form5_ppg_away":  1.5, "form5_gf_away": 1.4, "form5_ga_away": 1.0,
+                "form10_ppg_home": 1.5, "form10_gd_home": 0.4,
+                "form10_ppg_away": 1.5, "form10_gd_away": 0.4,
+                "neutral": 1, "is_host_home": 0, "comp_weight": 4.0,
+            }
+            xgb_probs = xgboost_model.predict_proba(xgb_model, feat)
+
+            # Weighted ensemble: Elo 35% + DC 35% + XGBoost 20% + (no market = redistributed)
+            final = combine(elo_probs, dc_probs, xgb_probs)
+            ensemble_log.append({
+                "team_a": ta, "team_b": tb,
+                "win_a":  final["win_a"],
+                "draw":   final["draw"],
+                "win_b":  final["win_b"],
+                "dc_win_a":  dc_probs["win_a"],
+                "elo_win_a": elo_probs["win_a"],
+                "xgb_win_a": xgb_probs["win_a"],
+                "lam_a": round(lam_a, 4),
+                "lam_b": round(lam_b, 4),
+            })
+
+    # Save ensemble probabilities for every matchup
+    ens_df = pd.DataFrame(ensemble_log)
+    ens_path = OUTPUTS_DIR / "match_forecasts" / "ensemble_probs.csv"
+    ens_df.to_csv(ens_path, index=False)
+    print(f"Ensemble probabilities saved → {ens_path} ({len(ens_df):,} matchups)")
+
+    # ── Run fast Monte Carlo ─────────────────────────────────
     results = mc_run(
         groups, lambdas, elo_ratings,
         dc_params["rho"],
