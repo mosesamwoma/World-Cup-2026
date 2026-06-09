@@ -37,5 +37,5 @@ python run.py --mode train_ensemble
 python run.py --mode simulate --n 100000
 
 # 4. Launch dashboard
-streamlit run dashboard/app.py
+python run.py --mode dashboard
 ```
