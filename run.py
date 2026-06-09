@@ -7,6 +7,11 @@ Usage:
     python run.py --mode dashboard
 """
 import argparse
+import sys
+import os
+
+# Make sure both src/ and simulation/ are importable from root
+sys.path.insert(0, os.path.dirname(__file__))
 
 
 def main():
@@ -24,8 +29,7 @@ def main():
         run_simulation(n=args.n)
 
     elif args.mode == "dashboard":
-        import subprocess, sys
-        # FIXED: was pointing to src/dashboard/app.py — wrong path
+        import subprocess
         subprocess.run([sys.executable, "-m", "streamlit", "run", "dashboard/app.py"])
 
 
