@@ -1,6 +1,14 @@
 # ============================================================
 #  Streamlit dashboard — FIFA World Cup 2026 Forecasting
+#  Fixed: relative paths, works on Streamlit Cloud
 # ============================================================
+import sys
+import os
+
+# Fix paths so imports work both locally and on Streamlit Cloud
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -9,9 +17,13 @@ import plotly.graph_objects as go
 import joblib
 from pathlib import Path
 
-from src.config import MODELS_DIR, OUTPUTS_DIR, DATA_PROCESSED
-from src.models import dixon_coles
-from src.models.dixon_coles import score_matrix
+# ── Relative paths — works everywhere ───────────────────────
+MODELS_DIR     = Path(ROOT) / "models"
+OUTPUTS_DIR    = Path(ROOT) / "outputs"
+DATA_PROCESSED = Path(ROOT) / "data" / "processed"
+DATA_RAW       = Path(ROOT) / "data" / "raw"
+
+from src.models.dixon_coles import score_matrix, match_probs, predict
 
 st.set_page_config(
     page_title="WC 2026 Forecast",
@@ -27,6 +39,13 @@ def load_dc_params():
         return joblib.load(path)
     return None
 
+@st.cache_resource
+def load_ensemble_weights():
+    path = MODELS_DIR / "ensemble_weights.pkl"
+    if path.exists():
+        return joblib.load(path)
+    return {"elo": 0.35, "dixon_coles": 0.35, "xgboost": 0.20, "market": 0.10}
+
 @st.cache_data
 def load_tournament_probs():
     path = OUTPUTS_DIR / "tournament_probabilities" / "latest.csv"
@@ -41,15 +60,91 @@ def load_elo_ratings():
         return pd.read_csv(path)
     return None
 
-dc_params      = load_dc_params()
-tournament_df  = load_tournament_probs()
-elo_df         = load_elo_ratings()
+@st.cache_data
+def load_ensemble_probs():
+    path = OUTPUTS_DIR / "match_forecasts" / "ensemble_probs.csv"
+    if path.exists():
+        return pd.read_csv(path)
+    return None
+
+@st.cache_data
+def get_2026_groups():
+    """
+    Derive groups from results.csv fixtures.
+    Falls back to hardcoded groups if data/raw not available on Cloud.
+    """
+    try:
+        from src.preprocessing.normalize import normalize_team
+        df = pd.read_csv(DATA_RAW / "results.csv", parse_dates=["date"])
+        fixtures = df[
+            (df["tournament"] == "FIFA World Cup") &
+            (df["date"].dt.year == 2026) &
+            (df["home_score"].isna())
+        ][["date", "home_team", "away_team"]].copy()
+
+        fixtures["home_team"] = fixtures["home_team"].apply(normalize_team)
+        fixtures["away_team"] = fixtures["away_team"].apply(normalize_team)
+
+        played = set()
+        for _, r in fixtures.iterrows():
+            played.add(frozenset([r.home_team, r.away_team]))
+
+        all_teams = sorted(set(fixtures.home_team) | set(fixtures.away_team))
+        groups, assigned = {}, set()
+        letter = "A"
+        for t1 in all_teams:
+            if t1 in assigned:
+                continue
+            group = [t1]
+            for t2 in all_teams:
+                if t2 == t1 or t2 in assigned:
+                    continue
+                if frozenset([t1, t2]) in played:
+                    if all(frozenset([t2, gm]) in played for gm in group):
+                        group.append(t2)
+                if len(group) == 4:
+                    break
+            if len(group) == 4:
+                groups[letter] = sorted(group)
+                assigned.update(group)
+                letter = chr(ord(letter) + 1)
+        if len(groups) == 12:
+            return groups
+    except Exception:
+        pass
+
+    # Fallback — hardcoded from official FIFA draw
+    return {
+        "A": ["Algeria",   "Argentina", "Austria",              "Jordan"],
+        "B": ["Australia", "Paraguay",  "Turkey",               "United States"],
+        "C": ["Belgium",   "Egypt",     "Iran",                 "New Zealand"],
+        "D": ["Bosnia and Herzegovina", "Canada", "Qatar",      "Switzerland"],
+        "E": ["Brazil",    "Haiti",     "Morocco",              "Scotland"],
+        "F": ["Cape Verde","Saudi Arabia","Spain",              "Uruguay"],
+        "G": ["Colombia",  "DR Congo",  "Portugal",             "Uzbekistan"],
+        "H": ["Croatia",   "England",   "Ghana",                "Panama"],
+        "I": ["Curaçao",   "Ecuador",   "Germany",              "Ivory Coast"],
+        "J": ["Czech Republic","Mexico","South Africa",         "South Korea"],
+        "K": ["France",    "Iraq",      "Norway",               "Senegal"],
+        "L": ["Japan",     "Netherlands","Sweden",              "Tunisia"],
+    }
+
+dc_params     = load_dc_params()
+weights       = load_ensemble_weights()
+tournament_df = load_tournament_probs()
+elo_df        = load_elo_ratings()
+ensemble_df   = load_ensemble_probs()
+groups        = get_2026_groups()
 
 # ── Sidebar ──────────────────────────────────────────────────
-st.sidebar.image(
-    "https://upload.wikimedia.org/wikipedia/en/thumb/e/e3/2026_FIFA_World_Cup.svg/200px-2026_FIFA_World_Cup.svg.png",
-    width=120,
-)
+try:
+    st.sidebar.image(
+        "https://upload.wikimedia.org/wikipedia/en/thumb/e/e3/2026_FIFA_World_Cup.svg/200px-2026_FIFA_World_Cup.svg.png",
+        width=120,
+    )
+except Exception:
+    pass
+
 st.sidebar.title("⚽ WC 2026 Forecast")
 st.sidebar.caption("XGBoost · Dixon-Coles · Elo · Monte Carlo")
 st.sidebar.divider()
@@ -62,19 +157,26 @@ page = st.sidebar.radio("Navigate", [
     "🏆  Tournament Probabilities",
 ])
 
-# ── Status indicators in sidebar ────────────────────────────
 st.sidebar.divider()
 st.sidebar.markdown("**Pipeline status**")
-st.sidebar.markdown("✅ Dixon-Coles" if dc_params else "❌ Dixon-Coles — run `python run.py --mode train`")
-st.sidebar.markdown("✅ Elo ratings"  if elo_df is not None else "❌ Elo ratings  — run `python run.py --mode train`")
-st.sidebar.markdown("✅ Tournament"   if tournament_df is not None else "❌ Tournament  — run `python run.py --mode simulate`")
+st.sidebar.markdown("✅ Dixon-Coles"  if dc_params       else "❌ Dixon-Coles")
+st.sidebar.markdown("✅ Elo ratings"  if elo_df is not None else "❌ Elo ratings")
+st.sidebar.markdown("✅ Tournament"   if tournament_df is not None else "❌ Tournament")
+st.sidebar.divider()
+if weights:
+    st.sidebar.markdown("**Ensemble weights**")
+    st.sidebar.markdown(f"Elo: `{weights.get('elo', 0):.2f}` · DC: `{weights.get('dixon_coles', 0):.2f}` · XGB: `{weights.get('xgboost', 0):.2f}`")
 
 # ════════════════════════════════════════════════════════════
 #  HOME
 # ════════════════════════════════════════════════════════════
 if page == "🏠  Home":
     st.title("⚽ FIFA World Cup 2026 — ML Forecasting System")
-    st.markdown("Probabilistic match & tournament predictions using **Dixon-Coles Poisson**, **XGBoost**, and **Monte Carlo simulation**.")
+    st.markdown(
+        "Probabilistic match & tournament predictions using "
+        "**Dixon-Coles Poisson**, **XGBoost**, **Elo ratings**, and **Monte Carlo simulation** "
+        "across 100,000 tournament iterations."
+    )
     st.divider()
 
     c1, c2, c3, c4 = st.columns(4)
@@ -86,19 +188,37 @@ if page == "🏠  Home":
     st.divider()
 
     if tournament_df is not None:
-        st.subheader("🏆 Top 10 championship favourites")
-        top10 = tournament_df.sort_values("champion", ascending=False).head(10).copy()
-        top10["champion_%"] = (top10["champion"] * 100).round(1)
+        st.subheader("🏆 Top 12 championship favourites")
+        top12 = tournament_df.sort_values("champion", ascending=False).head(12).copy()
+        top12["Champion %"] = (top12["champion"] * 100).round(1)
         fig = px.bar(
-            top10, x="team", y="champion_%",
-            color="champion_%",
+            top12, x="team", y="Champion %",
+            color="Champion %",
             color_continuous_scale="Greens",
-            labels={"champion_%": "Champion %", "team": ""},
-            text="champion_%",
+            labels={"Champion %": "Champion %", "team": ""},
+            text="Champion %",
         )
         fig.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
-        fig.update_layout(showlegend=False, coloraxis_showscale=False, height=380)
+        fig.update_layout(
+            showlegend=False,
+            coloraxis_showscale=False,
+            height=400,
+            margin=dict(t=20, b=20),
+        )
         st.plotly_chart(fig, use_container_width=True)
+
+        st.divider()
+        st.subheader("📋 Full tournament odds snapshot")
+        snap = tournament_df.sort_values("champion", ascending=False).copy()
+        for col in ["group", "r32", "r16", "qf", "sf", "final", "champion"]:
+            snap[col] = (snap[col] * 100).round(1).astype(str) + "%"
+        snap.columns = [
+            c if c == "team" else c.upper()
+            for c in snap.columns
+        ]
+        snap = snap.rename(columns={"team": "Team", "GROUP": "Group",
+                                     "CHAMPION": "Champion"})
+        st.dataframe(snap, use_container_width=True, hide_index=True)
     else:
         st.info("Run `python run.py --mode simulate` to generate tournament probabilities.")
 
@@ -114,52 +234,79 @@ elif page == "🔮  Match Forecast":
 
     teams = sorted(dc_params["teams"])
     col1, col2, col3 = st.columns([2, 1, 2])
-    team_a  = col1.selectbox("Home team", teams, index=teams.index("France") if "France" in teams else 0)
-    col2.markdown("<div style='text-align:center; padding-top:30px; font-size:20px;'>VS</div>", unsafe_allow_html=True)
-    team_b  = col3.selectbox("Away team", teams, index=teams.index("Brazil") if "Brazil" in teams else 1)
+    team_a = col1.selectbox(
+        "Team A", teams,
+        index=teams.index("France") if "France" in teams else 0
+    )
+    col2.markdown(
+        "<div style='text-align:center;padding-top:30px;font-size:20px;'>VS</div>",
+        unsafe_allow_html=True
+    )
+    team_b = col3.selectbox(
+        "Team B", teams,
+        index=teams.index("Brazil") if "Brazil" in teams else 1
+    )
     neutral = st.checkbox("Neutral venue", value=True)
 
     if st.button("⚡ Generate forecast", type="primary"):
-        result = dixon_coles.predict(team_a, team_b, dc_params, neutral)
+
+        # Dixon-Coles prediction
+        result = predict(team_a, team_b, dc_params, neutral)
+
+        # Pull ensemble probability if available
+        ens_row = None
+        if ensemble_df is not None:
+            mask = (
+                (ensemble_df["team_a"] == team_a) &
+                (ensemble_df["team_b"] == team_b)
+            )
+            if mask.any():
+                ens_row = ensemble_df[mask].iloc[0]
 
         st.divider()
 
-        # Win probabilities
-        c1, c2, c3 = st.columns(3)
-        c1.metric(f"🏳 {team_a} win", f"{result['win_a']*100:.1f}%")
-        c2.metric("🤝 Draw",          f"{result['draw']*100:.1f}%")
-        c3.metric(f"🏳 {team_b} win", f"{result['win_b']*100:.1f}%")
+        # Win probabilities — use ensemble if available, else Dixon-Coles
+        win_a = float(ens_row["win_a"]) if ens_row is not None else result["win_a"]
+        draw  = float(ens_row["draw"])  if ens_row is not None else result["draw"]
+        win_b = float(ens_row["win_b"]) if ens_row is not None else result["win_b"]
 
-        # Probability bar
+        source = "Ensemble (Elo + DC + XGB)" if ens_row is not None else "Dixon-Coles only"
+        st.caption(f"Source: {source}")
+
+        c1, c2, c3 = st.columns(3)
+        c1.metric(f"🏳 {team_a} win", f"{win_a*100:.1f}%")
+        c2.metric("🤝 Draw",          f"{draw*100:.1f}%")
+        c3.metric(f"🏳 {team_b} win", f"{win_b*100:.1f}%")
+
         fig_bar = go.Figure(go.Bar(
-            x=[result["win_a"]*100, result["draw"]*100, result["win_b"]*100],
+            x=[win_a*100, draw*100, win_b*100],
             y=[team_a, "Draw", team_b],
             orientation="h",
             marker_color=["#1a6fcc", "#888780", "#c0392b"],
-            text=[f"{result['win_a']*100:.1f}%", f"{result['draw']*100:.1f}%", f"{result['win_b']*100:.1f}%"],
+            text=[f"{win_a*100:.1f}%", f"{draw*100:.1f}%", f"{win_b*100:.1f}%"],
             textposition="auto",
         ))
-        fig_bar.update_layout(height=180, margin=dict(t=10, b=10), xaxis_title="Probability %")
+        fig_bar.update_layout(
+            height=180,
+            margin=dict(t=10, b=10),
+            xaxis_title="Probability %",
+        )
         st.plotly_chart(fig_bar, use_container_width=True)
 
         st.divider()
 
-        # Expected goals
         col_a, col_b = st.columns(2)
         col_a.metric(f"{team_a} expected goals (λ)", result["lambda_a"])
         col_b.metric(f"{team_b} expected goals (λ)", result["lambda_b"])
 
         st.divider()
 
-        # Scoreline probability heatmap
         st.subheader("Scoreline probability matrix")
-        lam_a   = result["lambda_a"]
-        lam_b   = result["lambda_b"]
-        rho     = dc_params["rho"]
-        mat     = score_matrix(lam_a, lam_b, rho, max_goals=6)
+        mat     = score_matrix(result["lambda_a"], result["lambda_b"],
+                               dc_params["rho"], max_goals=6)
         mat_pct = np.round(mat * 100, 1)
-
         goals   = list(range(7))
+
         fig_heat = go.Figure(go.Heatmap(
             z=mat_pct,
             x=[f"{team_b} {g}" for g in goals],
@@ -169,15 +316,18 @@ elif page == "🔮  Match Forecast":
             texttemplate="%{text:.1f}%",
             showscale=False,
         ))
-        fig_heat.update_layout(height=400, margin=dict(t=10))
+        fig_heat.update_layout(height=380, margin=dict(t=10))
         st.plotly_chart(fig_heat, use_container_width=True)
 
-        # Top 8 scorelines
         st.subheader("Most likely scorelines")
         scores = []
         for i in range(7):
             for j in range(7):
-                scores.append({"Score": f"{i} - {j}", "Probability": f"{mat_pct[i][j]:.1f}%", "_p": mat_pct[i][j]})
+                scores.append({
+                    "Score":       f"{i} - {j}",
+                    "Probability": f"{mat_pct[i][j]:.1f}%",
+                    "_p":          mat_pct[i][j],
+                })
         top8 = sorted(scores, key=lambda x: -x["_p"])[:8]
         cols = st.columns(8)
         for idx, s in enumerate(top8):
@@ -194,14 +344,17 @@ elif page == "👤  Team Profile":
         st.stop()
 
     teams_list = sorted(elo_df["team"].tolist())
-    team = st.selectbox("Select team", teams_list, index=teams_list.index("France") if "France" in teams_list else 0)
+    team = st.selectbox(
+        "Select team", teams_list,
+        index=teams_list.index("France") if "France" in teams_list else 0
+    )
 
-    elo_val = elo_df[elo_df["team"] == team]["elo"].values[0]
+    elo_val  = float(elo_df[elo_df["team"] == team]["elo"].values[0])
     elo_rank = int(elo_df[elo_df["elo"] >= elo_val].shape[0])
 
     c1, c2, c3 = st.columns(3)
     c1.metric("Elo rating", f"{elo_val:.0f}")
-    c2.metric("World rank", f"#{elo_rank}")
+    c2.metric("World rank",  f"#{elo_rank}")
 
     if tournament_df is not None and team in tournament_df["team"].values:
         row = tournament_df[tournament_df["team"] == team].iloc[0]
@@ -210,13 +363,15 @@ elif page == "👤  Team Profile":
         st.divider()
         st.subheader("Tournament stage progression")
 
-        stages   = ["group", "r32", "r16", "qf", "sf", "final", "champion"]
-        labels   = ["Group stage", "Round of 32", "Round of 16", "Quarterfinal", "Semifinal", "Final", "Champion"]
-        values   = [row[s] * 100 for s in stages]
-        colors   = ["#888780", "#5b87c0", "#378add", "#185fa5", "#0c447c", "#6fcf97", "#1a9a52"]
+        stages = ["group", "r32", "r16", "qf", "sf", "final", "champion"]
+        labels = ["Group stage", "R32", "R16", "Quarterfinal",
+                  "Semifinal", "Final", "Champion"]
+        values = [row[s] * 100 for s in stages]
+        colors = ["#888780", "#5b87c0", "#378add",
+                  "#185fa5", "#0c447c", "#6fcf97", "#1a9a52"]
 
         fig_stages = go.Figure()
-        for s, l, v, c in zip(stages, labels, values, colors):
+        for l, v, c in zip(labels, values, colors):
             fig_stages.add_trace(go.Bar(
                 x=[v], y=[l],
                 orientation="h",
@@ -226,13 +381,16 @@ elif page == "👤  Team Profile":
                 name=l,
                 showlegend=False,
             ))
-        fig_stages.update_layout(height=350, xaxis_title="Probability %", margin=dict(t=10))
+        fig_stages.update_layout(
+            height=350,
+            xaxis_title="Probability %",
+            margin=dict(t=10),
+        )
         st.plotly_chart(fig_stages, use_container_width=True)
 
     st.divider()
-    st.subheader(f"Elo ranking context")
+    st.subheader("Elo ranking — top 20")
     top20 = elo_df.head(20).copy()
-    top20["rank"] = range(1, len(top20) + 1)
     top20["highlight"] = top20["team"] == team
     fig_elo = px.bar(
         top20, x="elo", y="team",
@@ -243,7 +401,11 @@ elif page == "👤  Team Profile":
         text="elo",
     )
     fig_elo.update_traces(texttemplate="%{text:.0f}", textposition="outside")
-    fig_elo.update_layout(showlegend=False, height=520, margin=dict(t=10))
+    fig_elo.update_layout(
+        showlegend=False,
+        height=520,
+        margin=dict(t=10),
+    )
     fig_elo.update_yaxes(autorange="reversed")
     st.plotly_chart(fig_elo, use_container_width=True)
 
@@ -254,15 +416,7 @@ elif page == "📊  Group Stage Odds":
     st.title("📊 Group Stage Odds")
 
     if tournament_df is None:
-        st.error("No simulation data found. Run `python run.py --mode simulate` first.")
-        st.stop()
-
-    # Derive groups from fixture data
-    try:
-        from src.pipeline import get_2026_groups
-        groups = get_2026_groups()
-    except Exception:
-        st.error("Could not load groups. Make sure data/raw/results.csv exists.")
+        st.error("Run `python run.py --mode simulate` first.")
         st.stop()
 
     group_letter = st.selectbox("Select group", sorted(groups.keys()))
@@ -273,19 +427,23 @@ elif page == "📊  Group Stage Odds":
     cols = st.columns(len(group_teams))
     for i, team in enumerate(group_teams):
         if team in tournament_df["team"].values:
-            row = tournament_df[tournament_df["team"] == team].iloc[0]
-            elo_val = elo_df[elo_df["team"] == team]["elo"].values[0] if elo_df is not None and team in elo_df["team"].values else "N/A"
-            cols[i].metric(team, f"Qual: {row['group']*100:.0f}%", f"Elo {elo_val:.0f}" if isinstance(elo_val, float) else "")
+            row     = tournament_df[tournament_df["team"] == team].iloc[0]
+            elo_val = (
+                float(elo_df[elo_df["team"] == team]["elo"].values[0])
+                if elo_df is not None and team in elo_df["team"].values
+                else None
+            )
+            delta = f"Elo {elo_val:.0f}" if elo_val else ""
+            cols[i].metric(team, f"Qual: {row['group']*100:.0f}%", delta)
 
     st.divider()
 
-    # Group qualification bar chart
     group_data = []
     for team in group_teams:
         if team in tournament_df["team"].values:
             row = tournament_df[tournament_df["team"] == team].iloc[0]
             group_data.append({
-                "team": team,
+                "team":       team,
                 "Qualify %":  round(row["group"] * 100, 1),
                 "R32 %":      round(row["r32"]   * 100, 1),
                 "R16 %":      round(row["r16"]   * 100, 1),
@@ -302,8 +460,27 @@ elif page == "📊  Group Stage Odds":
             text="Probability",
         )
         fig_group.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
-        fig_group.update_layout(height=400, margin=dict(t=10))
+        fig_group.update_layout(height=420, margin=dict(t=10))
         st.plotly_chart(fig_group, use_container_width=True)
+
+    # Group vs group comparison
+    st.divider()
+    st.subheader("Match probabilities within group")
+    if ensemble_df is not None:
+        for i, ta in enumerate(group_teams):
+            for tb in group_teams[i+1:]:
+                mask = (
+                    (ensemble_df["team_a"] == ta) &
+                    (ensemble_df["team_b"] == tb)
+                )
+                if mask.any():
+                    r = ensemble_df[mask].iloc[0]
+                    st.markdown(
+                        f"**{ta}** vs **{tb}** — "
+                        f"{ta}: `{r['win_a']*100:.1f}%` · "
+                        f"Draw: `{r['draw']*100:.1f}%` · "
+                        f"{tb}: `{r['win_b']*100:.1f}%`"
+                    )
 
 # ════════════════════════════════════════════════════════════
 #  TOURNAMENT PROBABILITIES
@@ -312,7 +489,7 @@ elif page == "🏆  Tournament Probabilities":
     st.title("🏆 Tournament Probabilities")
 
     if tournament_df is None:
-        st.error("No simulation data found. Run `python run.py --mode simulate` first.")
+        st.error("Run `python run.py --mode simulate` first.")
         st.stop()
 
     stage_map = {
@@ -344,7 +521,7 @@ elif page == "🏆  Tournament Probabilities":
     fig.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
     fig.update_layout(
         coloraxis_showscale=False,
-        height=500,
+        height=520,
         xaxis_tickangle=-45,
         margin=dict(t=40, b=100),
     )
@@ -353,9 +530,14 @@ elif page == "🏆  Tournament Probabilities":
     st.divider()
     st.subheader("Full probability table")
 
-    display_df = sorted_df[["team", "group", "r32", "r16", "qf", "sf", "final", "champion"]].copy()
+    display_df = sorted_df[
+        ["team", "group", "r32", "r16", "qf", "sf", "final", "champion"]
+    ].copy()
     for col in ["group", "r32", "r16", "qf", "sf", "final", "champion"]:
-        display_df[col] = (display_df[col] * 100).round(1).astype(str) + "%"
-    display_df.columns = ["Team", "Group", "R32", "R16", "QF", "SF", "Final", "Champion"]
-
+        display_df[col] = (
+            display_df[col] * 100
+        ).round(1).astype(str) + "%"
+    display_df.columns = [
+        "Team", "Group", "R32", "R16", "QF", "SF", "Final", "Champion"
+    ]
     st.dataframe(display_df, use_container_width=True, hide_index=True)

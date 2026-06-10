@@ -1,17 +1,14 @@
-*.pdf
-*.csv
-# But track data folder with .gitkeep
-!data/
-!data/**/.gitkeep
-# Virtual environment
-venv/
-ml_env/
-env/
-# Python cache
 __pycache__/
-*.pyc
-*.pyo
-# Jupyter notebooks (optional - some people track these)
-.ipynb_checkpoints/
-# Environment variables
+*.py[cod]
 .env
+venv/
+.venv/
+.DS_Store
+*.ipynb_checkpoints
+
+# Keep raw data out of git — too large
+data/raw/*.csv
+
+# Keep matches_with_elo out — too large (49K rows)
+data/processed/matches_with_elo.csv
+data/processed/features.csv
