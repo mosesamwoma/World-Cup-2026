@@ -141,7 +141,7 @@ st.sidebar.title("WC 2026 Forecast")
 st.sidebar.caption("XGBoost · Dixon-Coles · Elo · Monte Carlo")
 st.sidebar.divider()
 
-# Navigation moved up
+# Navigation
 page = st.sidebar.radio("Navigate", [
     "Home",
     "Match Forecast",
@@ -154,9 +154,9 @@ st.sidebar.divider()
 
 # Pipeline status for 3 models
 st.sidebar.markdown("**Pipeline Status**")
-status_dc = "✅ Ready" if dc_params else "❌ Missing"
-status_elo = "✅ Ready" if elo_df is not None else "❌ Missing"
-status_tournament = "✅ Ready" if tournament_df is not None else "❌ Missing"
+status_dc = "Ready" if dc_params else "Missing"
+status_elo = "Ready" if elo_df is not None else "Missing"
+status_tournament = "Ready" if tournament_df is not None else "Missing"
 st.sidebar.markdown(f"Dixon-Coles: {status_dc}")
 st.sidebar.markdown(f"Elo Ratings: {status_elo}")
 st.sidebar.markdown(f"Tournament: {status_tournament}")
@@ -168,15 +168,24 @@ if weights:
     st.sidebar.markdown(f"Dixon-Coles: `{weights.get('dixon_coles', 0):.2f}`")
     st.sidebar.markdown(f"XGBoost: `{weights.get('xgboost', 0):.2f}`")
 
+st.sidebar.divider()
+
+# Cache control button
+if st.sidebar.button("Clear Caches"):
+    st.cache_data.clear()
+    st.cache_resource.clear()
+    st.sidebar.success("Caches cleared! Refresh the page to reload data.")
+    st.rerun()
+
 # ============================================================
 #  HOME
 # ============================================================
 if page == "Home":
     st.title("FIFA World Cup 2026 - ML Forecasting System")
     st.markdown(
-        "Probabilistic match & tournament predictions using "
-        "**Dixon-Coles Poisson**, **XGBoost**, **Elo ratings**, and **Monte Carlo simulation** "
-        "across 100,000 tournament iterations."
+        "Probabilistic match and tournament predictions using an ensemble of "
+        "**XGBoost**, **Dixon-Coles Poisson**, and **Elo ratings**, combined with "
+        "**Monte Carlo simulation** across 100,000 tournament iterations."
     )
     st.divider()
 
@@ -184,7 +193,7 @@ if page == "Home":
     c1.metric("Teams", "48")
     c2.metric("Groups", "12")
     c3.metric("Matches", "104")
-    c4.metric("MC iterations", "100,000")
+    c4.metric("MC Iterations", "100,000")
 
     st.divider()
 
@@ -297,8 +306,8 @@ elif page == "Match Forecast":
         st.divider()
 
         col_a, col_b = st.columns(2)
-        col_a.metric(f"{team_a} Expected Goals", result["lambda_a"])
-        col_b.metric(f"{team_b} Expected Goals", result["lambda_b"])
+        col_a.metric(f"{team_a} Expected Goals", f"{result['lambda_a']:.2f}")
+        col_b.metric(f"{team_b} Expected Goals", f"{result['lambda_b']:.2f}")
 
         st.divider()
 
@@ -365,7 +374,7 @@ elif page == "Team Profile":
         st.subheader("Tournament Stage Progression")
 
         stages = ["group", "r32", "r16", "qf", "sf", "final", "champion"]
-        labels = ["Group Stage", "R32", "R16", "Quarterfinal",
+        labels = ["Group Stage", "Round of 32", "Round of 16", "Quarterfinal",
                   "Semifinal", "Final", "Champion"]
         values = [row[s] * 100 for s in stages]
         colors = ["#888780", "#5b87c0", "#378add",
@@ -446,8 +455,8 @@ elif page == "Group Stage Odds":
             group_data.append({
                 "team":       team,
                 "Qualify %":  round(row["group"] * 100, 1),
-                "R32 %":      round(row["r32"]   * 100, 1),
-                "R16 %":      round(row["r16"]   * 100, 1),
+                "Round 32 %": round(row["r32"]   * 100, 1),
+                "Round 16 %": round(row["r16"]   * 100, 1),
             })
 
     if group_data:
@@ -539,6 +548,6 @@ elif page == "Tournament Probabilities":
             display_df[col] * 100
         ).round(1).astype(str) + "%"
     display_df.columns = [
-        "Team", "Group", "R32", "R16", "QF", "SF", "Final", "Champion"
+        "Team", "Group", "Round 32", "Round 16", "QF", "SF", "Final", "Champion"
     ]
     st.dataframe(display_df, width='stretch', hide_index=True)
