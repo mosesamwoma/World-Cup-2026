@@ -4,7 +4,6 @@
 import os
 from pathlib import Path
 
-# FIXED: dotenv is optional — don't crash if not installed
 try:
     from dotenv import load_dotenv
     load_dotenv()
@@ -13,24 +12,22 @@ except ImportError:
 
 ROOT = Path(__file__).parent.parent
 
-# Paths — FIXED: mkdir so runtime never crashes on missing dirs
 DATA_RAW        = ROOT / "data" / "raw"
 DATA_PROCESSED  = ROOT / "data" / "processed"
 DATA_EXTERNAL   = ROOT / "data" / "external"
 MODELS_DIR      = ROOT / "models"
 OUTPUTS_DIR     = ROOT / "outputs"
 
-# Create dirs at import time so nothing crashes
 for _dir in [DATA_RAW, DATA_PROCESSED, DATA_EXTERNAL, MODELS_DIR,
              OUTPUTS_DIR / "match_forecasts",
              OUTPUTS_DIR / "group_probabilities",
              OUTPUTS_DIR / "tournament_probabilities"]:
     _dir.mkdir(parents=True, exist_ok=True)
 
-# Elo
+# Elo — reduced K-factor so recent matches don't swing ratings too much
 BASE_ELO        = 1500
 HOME_ADVANTAGE  = 65
-K_FACTOR_BASE   = 40
+K_FACTOR_BASE   = 20
 
 # Temporal decay
 LAMBDA_DECAY    = 0.25
@@ -46,7 +43,7 @@ COMPETITION_WEIGHTS = {
     "Friendly":                   0.5,
 }
 
-# Ensemble weights
+# Ensemble weights — fallback if ensemble_weights.pkl not found
 ENSEMBLE_WEIGHTS = {
     "elo":         0.35,
     "dixon_coles": 0.35,

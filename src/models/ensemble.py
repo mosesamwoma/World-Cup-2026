@@ -1,6 +1,6 @@
 # ============================================================
 #  Ensemble forecast combiner — with finetunable weights
-#  Weights can be hardcoded OR learned via train_weights()
+#  Fixed: L2 regularization + minimum 10% per model
 # ============================================================
 import numpy as np
 import joblib
@@ -17,7 +17,6 @@ def combine(
     """
     Weighted ensemble of model outputs.
     Each input dict: {"win_a": float, "draw": float, "win_b": float}
-    Pass custom weights dict to override config defaults.
     """
     w = dict(weights) if weights else dict(ENSEMBLE_WEIGHTS)
 
@@ -42,22 +41,9 @@ def combine(
 
 def train_weights(backtest_df, verbose: bool = True) -> dict:
     """
-    Learn optimal ensemble weights by minimizing log loss
-    on backtest data (2018 + 2022 World Cup matches).
-
-    backtest_df columns:
-        result       — actual outcome: 1=home win, 0=draw, -1=away win
-        elo_win_a    — Elo predicted win_a prob
-        elo_draw     — Elo predicted draw prob
-        elo_win_b    — Elo predicted win_b prob
-        dc_win_a     — Dixon-Coles win_a prob
-        dc_draw      — Dixon-Coles draw prob
-        dc_win_b     — Dixon-Coles win_b prob
-        xgb_win_a    — XGBoost win_a prob
-        xgb_draw     — XGBoost draw prob
-        xgb_win_b    — XGBoost win_b prob
-
-    Returns learned weights dict saved to models/ensemble_weights.pkl
+    Learn optimal ensemble weights by minimizing log loss.
+    Fixed: L2 regularization prevents any single model dominating.
+    Minimum 10% weight enforced per model.
     """
     from scipy.optimize import minimize
     from scipy.special import softmax
@@ -68,37 +54,35 @@ def train_weights(backtest_df, verbose: bool = True) -> dict:
     if verbose:
         print(f"  Training ensemble weights on {n} backtest matches...")
 
-    # Build model probability arrays: shape (n, 3) each
-    # columns: [win_a, draw, win_b]
     elo_p = df[["elo_win_a", "elo_draw", "elo_win_b"]].values
     dc_p  = df[["dc_win_a",  "dc_draw",  "dc_win_b"]].values
     xgb_p = df[["xgb_win_a", "xgb_draw", "xgb_win_b"]].values
 
-    # One-hot encode actual outcomes
-    result_map = {1: 0, 0: 1, -1: 2}   # win_a=0, draw=1, win_b=2
-    y = np.array([result_map[r] for r in df["result"].values])
-    y_onehot = np.eye(3)[y]   # (n, 3)
+    result_map = {1: 0, 0: 1, -1: 2}
+    y        = np.array([result_map[r] for r in df["result"].values])
+    y_onehot = np.eye(3)[y]
 
     def neg_log_loss(raw_weights):
-        # Softmax to ensure weights sum to 1 and are positive
         w = softmax(raw_weights)
         probs = w[0] * elo_p + w[1] * dc_p + w[2] * xgb_p
         probs = np.clip(probs, 1e-10, 1)
         probs /= probs.sum(axis=1, keepdims=True)
         ll = np.sum(y_onehot * np.log(probs)) / n
-        return -ll
+        # L2 regularization — pulls weights toward equal (1/3 each)
+        # lambda=0.5 prevents any model collapsing to 0
+        l2_penalty = 0.5 * np.sum((w - 1/3) ** 2)
+        return -ll + l2_penalty
 
-    # Start from config weights as initial guess
-    w0 = np.array([
-        ENSEMBLE_WEIGHTS["elo"],
-        ENSEMBLE_WEIGHTS["dixon_coles"],
-        ENSEMBLE_WEIGHTS["xgboost"],
-    ])
-    # Convert to log space for softmax
-    x0 = np.log(w0 + 1e-10)
+    # Start from equal weights → equal softmax inputs = zeros
+    x0 = np.zeros(3)
 
     result = minimize(neg_log_loss, x0, method="L-BFGS-B")
     learned_w = softmax(result.x)
+
+    # Enforce minimum 10% per model so nothing is ignored
+    MIN_WEIGHT = 0.10
+    learned_w  = np.clip(learned_w, MIN_WEIGHT, None)
+    learned_w /= learned_w.sum()
 
     weights = {
         "elo":         round(float(learned_w[0]), 4),

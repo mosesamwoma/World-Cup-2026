@@ -48,9 +48,7 @@ def match_probs(matrix: np.ndarray) -> dict:
 
 
 def neg_log_likelihood(params, home_teams, away_teams, home_goals, away_goals, weights, teams):
-    """
-    Vectorized negative log-likelihood — no Python loop over matches.
-    """
+    """Vectorized negative log-likelihood — no Python loop over matches."""
     n = len(teams)
     team_idx = {t: i for i, t in enumerate(teams)}
 
@@ -59,7 +57,6 @@ def neg_log_likelihood(params, home_teams, away_teams, home_goals, away_goals, w
     home_adv = params[2*n]
     rho      = params[2*n + 1]
 
-    # Vectorized lambda computation
     hi = np.array([team_idx[t] for t in home_teams])
     ai = np.array([team_idx[t] for t in away_teams])
 
@@ -70,7 +67,6 @@ def neg_log_likelihood(params, home_teams, away_teams, home_goals, away_goals, w
     ag = np.array(away_goals)
     w  = np.array(weights)
 
-    # Vectorized Poisson PMF
     from scipy.special import gammaln
     def poisson_pmf(k, lam):
         return np.exp(k * np.log(np.clip(lam, 1e-10, None)) - lam - gammaln(k + 1))
@@ -78,14 +74,13 @@ def neg_log_likelihood(params, home_teams, away_teams, home_goals, away_goals, w
     p_h = poisson_pmf(hg, lam_h)
     p_a = poisson_pmf(ag, lam_a)
 
-    # Rho correction — only affects scores 0-0, 1-0, 0-1, 1-1
     rho_corr = np.ones(len(hg))
     rho_corr[(hg == 0) & (ag == 0)] = 1 - lam_h[(hg == 0) & (ag == 0)] * lam_a[(hg == 0) & (ag == 0)] * rho
     rho_corr[(hg == 1) & (ag == 0)] = 1 + lam_a[(hg == 1) & (ag == 0)] * rho
     rho_corr[(hg == 0) & (ag == 1)] = 1 + lam_h[(hg == 0) & (ag == 1)] * rho
     rho_corr[(hg == 1) & (ag == 1)] = 1 - rho
 
-    p = p_h * p_a * np.clip(rho_corr, 1e-10, None)
+    p  = p_h * p_a * np.clip(rho_corr, 1e-10, None)
     ll = np.sum(w * np.log(np.clip(p, 1e-10, None)))
     return -ll
 
@@ -95,7 +90,6 @@ def fit(df, weight_col: str = "final_weight"):
     Fit Dixon-Coles model to match dataframe.
     df needs: home_team, away_team, home_score, away_score, <weight_col>
     """
-    # Filter to valid completed matches only
     df = df.dropna(subset=["home_score", "away_score"]).copy()
     df["home_score"] = df["home_score"].astype(int)
     df["away_score"] = df["away_score"].astype(int)
@@ -106,14 +100,14 @@ def fit(df, weight_col: str = "final_weight"):
     print(f"  Fitting Dixon-Coles on {len(df):,} matches, {n} teams...")
 
     x0 = np.zeros(2 * n + 2)
-    x0[2*n]     =  0.1    # home advantage
-    x0[2*n + 1] = -0.1    # rho
+    x0[2*n]     =  0.1
+    x0[2*n + 1] = -0.1
 
     bounds = (
-        [(-3, 3)] * n +   # attack
-        [(-3, 3)] * n +   # defence
-        [(0, 1)]  +       # home advantage
-        [(-1, 0)]         # rho
+        [(-3, 3)] * n +
+        [(-3, 3)] * n +
+        [(0, 1)]  +
+        [(-1, 0)]
     )
 
     result = minimize(
@@ -129,7 +123,8 @@ def fit(df, weight_col: str = "final_weight"):
         ),
         method="L-BFGS-B",
         bounds=bounds,
-        options={"maxiter": 200, "ftol": 1e-9},
+        # FIXED: increased maxiter and relaxed tolerances so it converges
+        options={"maxiter": 500, "ftol": 1e-7, "gtol": 1e-6},
     )
 
     params = result.x
