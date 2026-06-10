@@ -2,6 +2,9 @@
 
 A probabilistic World Cup 2026 forecasting engine using an ensemble of XGBoost, Dixon–Coles Poisson modeling, dynamic Elo ratings, and Monte Carlo simulation to generate data-driven match outcomes and tournament probabilities.
 
+
+Live dashboard: https://world-cup-2026-ai.streamlit.app/
+
 ---
 
 ## Setup
@@ -30,7 +33,7 @@ cd ../..
 # 1. Train Dixon-Coles + XGBoost on 49K historical matches
 python run.py --mode train
 
-# 2. Learn optimal ensemble weights from 2018 + 2022 WC backtest
+# 2. Learn optimal ensemble weights from 2002 + 2022 WC backtest
 python run.py --mode train_ensemble
 
 # 3. Run Monte Carlo simulation (100K tournament iterations)
