@@ -11,6 +11,22 @@ from src.ratings.elo import build_elo_history, current_ratings
 from src.features.engineer import build_feature_matrix
 from src.models import dixon_coles, xgboost_model
 
+DRAW_RATE = 0.26   # international football average draw rate
+
+
+def _elo_probs(elo_a: float, elo_b: float) -> dict:
+    """
+    Convert Elo ratings to valid 3-outcome probabilities.
+    FIXED: previously win_a + draw + win_b = 1.70 (wrong).
+    Now correctly sums to 1.0.
+    """
+    exp_a = 1 / (1 + 10 ** ((elo_b - elo_a) / 400))
+    return {
+        "win_a": round(exp_a * (1 - DRAW_RATE), 6),
+        "draw":  DRAW_RATE,
+        "win_b": round((1 - exp_a) * (1 - DRAW_RATE), 6),
+    }
+
 
 def load_raw() -> pd.DataFrame:
     path = DATA_RAW / "results.csv"
@@ -159,18 +175,17 @@ def train_ensemble():
         hs, as_ = int(row["home_score"]), int(row["away_score"])
         result  = 1 if hs > as_ else (0 if hs == as_ else -1)
 
+        # FIXED: proper Elo probability distribution summing to 1.0
         elo_a = feat_row.get("elo_home", 1500)
         elo_b = feat_row.get("elo_away", 1500)
-        exp_a = 1 / (1 + 10 ** ((elo_b - elo_a) / 400))
-        elo_win_a = exp_a * 0.72
-        elo_draw  = 0.26
-        elo_win_b = (1 - exp_a) * 0.72
+        elo_p = _elo_probs(elo_a, elo_b)
 
         lam_a = np.exp(dc_params["attack"].get(ht, 0) + dc_params["defence"].get(at, 0))
         lam_b = np.exp(dc_params["attack"].get(at, 0) + dc_params["defence"].get(ht, 0))
         dc_p  = match_probs(score_matrix(lam_a, lam_b, dc_params["rho"]))
 
-        feat_dict = {c: feat_row.get(c, 0) for c in xgboost_model.FEATURE_COLS}
+        # FIXED: use actual form features from feature matrix, not dummy values
+        feat_dict = {c: float(feat_row.get(c, 0)) for c in xgboost_model.FEATURE_COLS}
         xgb_p = xgboost_model.predict_proba(xgb_model, feat_dict)
 
         backtest_rows.append({
@@ -178,9 +193,9 @@ def train_ensemble():
             "home_team": ht,
             "away_team": at,
             "result":    result,
-            "elo_win_a": elo_win_a,
-            "elo_draw":  elo_draw,
-            "elo_win_b": elo_win_b,
+            "elo_win_a": elo_p["win_a"],
+            "elo_draw":  elo_p["draw"],
+            "elo_win_b": elo_p["win_b"],
             "dc_win_a":  dc_p["win_a"],
             "dc_draw":   dc_p["draw"],
             "dc_win_b":  dc_p["win_b"],
@@ -211,9 +226,49 @@ def run_simulation(n: int = 100_000):
     ratings_df  = pd.read_csv(DATA_PROCESSED / "elo_ratings.csv")
     elo_ratings = dict(zip(ratings_df["team"], ratings_df["elo"]))
 
-    # Load learned weights if available, else use config defaults
+    # Load learned weights — falls back to config if not trained yet
     weights = load_weights()
     print(f"Ensemble weights: Elo={weights['elo']}  DC={weights['dixon_coles']}  XGB={weights['xgboost']}")
+
+    # Load feature matrix to get real form stats per team
+    features   = pd.read_csv(DATA_PROCESSED / "features.csv", parse_dates=["date"])
+    # Use the most recent match features per team as their current form
+    latest_home = features.sort_values("date").groupby("home_team").last().reset_index()
+    latest_away = features.sort_values("date").groupby("away_team").last().reset_index()
+
+    def get_team_form(team: str) -> dict:
+        """Get most recent form features for a team."""
+        row = latest_home[latest_home["home_team"] == team]
+        if row.empty:
+            row = latest_away[latest_away["away_team"] == team]
+            if row.empty:
+                return {c: 0.0 for c in xgboost_model.FEATURE_COLS}
+            row = row.iloc[0]
+            return {
+                "form5_ppg_home":  row.get("form5_ppg_away", 0),
+                "form5_gf_home":   row.get("form5_gf_away", 0),
+                "form5_ga_home":   row.get("form5_ga_away", 0),
+                "form5_ppg_away":  row.get("form5_ppg_away", 0),
+                "form5_gf_away":   row.get("form5_gf_away", 0),
+                "form5_ga_away":   row.get("form5_ga_away", 0),
+                "form10_ppg_home": row.get("form10_ppg_away", 0),
+                "form10_gd_home":  row.get("form10_gd_away", 0),
+                "form10_ppg_away": row.get("form10_ppg_away", 0),
+                "form10_gd_away":  row.get("form10_gd_away", 0),
+            }
+        row = row.iloc[0]
+        return {
+            "form5_ppg_home":  row.get("form5_ppg_home", 0),
+            "form5_gf_home":   row.get("form5_gf_home", 0),
+            "form5_ga_home":   row.get("form5_ga_home", 0),
+            "form5_ppg_away":  row.get("form5_ppg_away", 0),
+            "form5_gf_away":   row.get("form5_gf_away", 0),
+            "form5_ga_away":   row.get("form5_ga_away", 0),
+            "form10_ppg_home": row.get("form10_ppg_home", 0),
+            "form10_gd_home":  row.get("form10_gd_home", 0),
+            "form10_ppg_away": row.get("form10_ppg_away", 0),
+            "form10_gd_away":  row.get("form10_gd_away", 0),
+        }
 
     groups    = get_2026_groups()
     all_teams = [t for g in groups.values() for t in g]
@@ -231,24 +286,31 @@ def run_simulation(n: int = 100_000):
             lam_b = np.exp(dc_params["attack"].get(tb, 0) + dc_params["defence"].get(ta, 0))
             lambdas[(ta, tb)] = (lam_a, lam_b)
 
-            dc_probs = match_probs(score_matrix(lam_a, lam_b, dc_params["rho"]))
+            dc_probs  = match_probs(score_matrix(lam_a, lam_b, dc_params["rho"]))
 
-            elo_a = elo_ratings.get(ta, 1500)
-            elo_b = elo_ratings.get(tb, 1500)
-            exp_a = 1 / (1 + 10 ** ((elo_b - elo_a) / 400))
-            elo_probs = {
-                "win_a": round(exp_a * 0.72, 6),
-                "draw":  0.26,
-                "win_b": round((1 - exp_a) * 0.72, 6),
-            }
+            elo_a     = elo_ratings.get(ta, 1500)
+            elo_b     = elo_ratings.get(tb, 1500)
+            # FIXED: proper Elo probs summing to 1.0
+            elo_probs = _elo_probs(elo_a, elo_b)
 
+            # FIXED: use real form features per team
+            form_a = get_team_form(ta)
+            form_b = get_team_form(tb)
             feat = {
                 "elo_diff":        elo_a - elo_b,
-                "form5_ppg_home":  1.5, "form5_gf_home": 1.4, "form5_ga_home": 1.0,
-                "form5_ppg_away":  1.5, "form5_gf_away": 1.4, "form5_ga_away": 1.0,
-                "form10_ppg_home": 1.5, "form10_gd_home": 0.4,
-                "form10_ppg_away": 1.5, "form10_gd_away": 0.4,
-                "neutral": 1, "is_host_home": 0, "comp_weight": 4.0,
+                "form5_ppg_home":  form_a["form5_ppg_home"],
+                "form5_gf_home":   form_a["form5_gf_home"],
+                "form5_ga_home":   form_a["form5_ga_home"],
+                "form5_ppg_away":  form_b["form5_ppg_away"],
+                "form5_gf_away":   form_b["form5_gf_away"],
+                "form5_ga_away":   form_b["form5_ga_away"],
+                "form10_ppg_home": form_a["form10_ppg_home"],
+                "form10_gd_home":  form_a["form10_gd_home"],
+                "form10_ppg_away": form_b["form10_ppg_away"],
+                "form10_gd_away":  form_b["form10_gd_away"],
+                "neutral":    1,
+                "is_host_home": 0,
+                "comp_weight": 4.0,
             }
             xgb_probs = xgboost_model.predict_proba(xgb_model, feat)
 
