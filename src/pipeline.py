@@ -7,7 +7,7 @@ import joblib
 from src.config import DATA_RAW, DATA_PROCESSED, MODELS_DIR, OUTPUTS_DIR
 from src.preprocessing.normalize import normalize_team, normalize_competition
 from src.preprocessing.weighting import final_weight
-from src.ratings.elo import build_elo_history, current_ratings
+from src.ratings.elo import build_elo_history, current_ratings, adjusted_ratings
 from src.features.engineer import build_feature_matrix
 from src.models import dixon_coles, xgboost_model
 
@@ -111,13 +111,15 @@ def run_pipeline():
 
     print("\n── Step 5: Training XGBoost model ──")
     feature_cols = xgboost_model.FEATURE_COLS + ["result", "date"]
-    clean = features[feature_cols].dropna()
+    clean = features[[c for c in feature_cols if c in features.columns]].dropna()
     model = xgboost_model.train(clean)
     xgboost_model.save(model)
     print(f"XGBoost trained on {len(clean):,} matches")
 
     print("\n── Step 6: Saving current Elo ratings ──")
-    ratings = current_ratings(df)
+    # FIXED: use adjusted_ratings — applies confederation strength correction
+    # to prevent AFC/OFC/CONCACAF inflation from weak opposition
+    ratings = adjusted_ratings(df)
     ratings_df = pd.DataFrame(
         sorted(ratings.items(), key=lambda x: -x[1]),
         columns=["team", "elo"]
@@ -181,7 +183,6 @@ def train_ensemble():
         hs, as_ = int(row["home_score"]), int(row["away_score"])
         result  = 1 if hs > as_ else (0 if hs == as_ else -1)
 
-        # FIXED: proper Elo probs summing to 1.0
         elo_a = float(feat_row.get("elo_home", 1500))
         elo_b = float(feat_row.get("elo_away", 1500))
         elo_p = _elo_probs(elo_a, elo_b)
@@ -190,7 +191,6 @@ def train_ensemble():
         lam_b = np.exp(dc_params["attack"].get(at, 0) + dc_params["defence"].get(ht, 0))
         dc_p  = match_probs(score_matrix(lam_a, lam_b, dc_params["rho"]))
 
-        # FIXED: use real form features from feature matrix
         feat_dict = {c: float(feat_row.get(c, 0)) for c in xgboost_model.FEATURE_COLS}
         xgb_p = xgboost_model.predict_proba(xgb_model, feat_dict)
 
@@ -237,7 +237,6 @@ def run_simulation(n: int = 100_000):
     weights = load_weights()
     print(f"Ensemble weights: Elo={weights['elo']}  DC={weights['dixon_coles']}  XGB={weights['xgboost']}")
 
-    # Load real form stats per team from latest match in feature matrix
     features    = pd.read_csv(DATA_PROCESSED / "features.csv", parse_dates=["date"])
     latest_home = features.sort_values("date").groupby("home_team").last().reset_index()
     latest_away = features.sort_values("date").groupby("away_team").last().reset_index()
@@ -246,39 +245,15 @@ def run_simulation(n: int = 100_000):
         row = latest_home[latest_home["home_team"] == team]
         if not row.empty:
             row = row.iloc[0]
-            return {
-                "form5_ppg_home":  float(row.get("form5_ppg_home", 0)),
-                "form5_gf_home":   float(row.get("form5_gf_home", 0)),
-                "form5_ga_home":   float(row.get("form5_ga_home", 0)),
-                "form5_ppg_away":  float(row.get("form5_ppg_away", 0)),
-                "form5_gf_away":   float(row.get("form5_gf_away", 0)),
-                "form5_ga_away":   float(row.get("form5_ga_away", 0)),
-                "form10_ppg_home": float(row.get("form10_ppg_home", 0)),
-                "form10_gd_home":  float(row.get("form10_gd_home", 0)),
-                "form10_ppg_away": float(row.get("form10_ppg_away", 0)),
-                "form10_gd_away":  float(row.get("form10_gd_away", 0)),
-            }
+            return {c: float(row.get(c, 0)) for c in xgboost_model.FEATURE_COLS
+                    if c not in ("elo_diff", "neutral", "is_host_home", "comp_weight")}
         row = latest_away[latest_away["away_team"] == team]
         if not row.empty:
             row = row.iloc[0]
-            return {
-                "form5_ppg_home":  float(row.get("form5_ppg_away", 0)),
-                "form5_gf_home":   float(row.get("form5_gf_away", 0)),
-                "form5_ga_home":   float(row.get("form5_ga_away", 0)),
-                "form5_ppg_away":  float(row.get("form5_ppg_away", 0)),
-                "form5_gf_away":   float(row.get("form5_gf_away", 0)),
-                "form5_ga_away":   float(row.get("form5_ga_away", 0)),
-                "form10_ppg_home": float(row.get("form10_ppg_away", 0)),
-                "form10_gd_home":  float(row.get("form10_gd_away", 0)),
-                "form10_ppg_away": float(row.get("form10_ppg_away", 0)),
-                "form10_gd_away":  float(row.get("form10_gd_away", 0)),
-            }
-        return {c: 0.0 for c in [
-            "form5_ppg_home", "form5_gf_home", "form5_ga_home",
-            "form5_ppg_away", "form5_gf_away", "form5_ga_away",
-            "form10_ppg_home", "form10_gd_home",
-            "form10_ppg_away", "form10_gd_away",
-        ]}
+            return {c: float(row.get(c, 0)) for c in xgboost_model.FEATURE_COLS
+                    if c not in ("elo_diff", "neutral", "is_host_home", "comp_weight")}
+        return {c: 0.0 for c in xgboost_model.FEATURE_COLS
+                if c not in ("elo_diff", "neutral", "is_host_home", "comp_weight")}
 
     groups    = get_2026_groups()
     all_teams = [t for g in groups.values() for t in g]
@@ -301,22 +276,17 @@ def run_simulation(n: int = 100_000):
 
             form_a = get_team_form(ta)
             form_b = get_team_form(tb)
+
             feat = {
-                "elo_diff":        elo_ratings.get(ta, 1500) - elo_ratings.get(tb, 1500),
-                "form5_ppg_home":  form_a["form5_ppg_home"],
-                "form5_gf_home":   form_a["form5_gf_home"],
-                "form5_ga_home":   form_a["form5_ga_home"],
-                "form5_ppg_away":  form_b["form5_ppg_away"],
-                "form5_gf_away":   form_b["form5_gf_away"],
-                "form5_ga_away":   form_b["form5_ga_away"],
-                "form10_ppg_home": form_a["form10_ppg_home"],
-                "form10_gd_home":  form_a["form10_gd_home"],
-                "form10_ppg_away": form_b["form10_ppg_away"],
-                "form10_gd_away":  form_b["form10_gd_away"],
-                "neutral":         1,
-                "is_host_home":    0,
-                "comp_weight":     4.0,
+                "elo_diff":     elo_ratings.get(ta, 1500) - elo_ratings.get(tb, 1500),
+                "neutral":      1,
+                "is_host_home": 0,
+                "comp_weight":  4.0,
             }
+            # Merge in real form features for both teams
+            feat.update(form_a)
+            feat.update({k: form_b.get(k, 0) for k in form_b})
+
             xgb_probs = xgboost_model.predict_proba(xgb_model, feat)
 
             final = combine(elo_probs, dc_probs, xgb_probs, weights=weights)

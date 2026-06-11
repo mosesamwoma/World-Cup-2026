@@ -1,13 +1,14 @@
 # ============================================================
 #  Monte Carlo tournament simulation — fully vectorized
-#  Fixed: group = qualification %, not 1.0
+#  Fixed: hardcoded // 9, vectorized best8 selection
 # ============================================================
 import numpy as np
 from simulation.engine import build_score_cache
 from simulation.group_stage import simulate_groups_batch, get_standings
-from src.config import N_SIMULATIONS, THIRD_PLACE_SLOTS
+from src.config import N_SIMULATIONS, THIRD_PLACE_SLOTS, MAX_GOALS
 
 ALL_STAGES = ["group", "r32", "r16", "qf", "sf", "final", "champion"]
+_STRIDE = MAX_GOALS + 1   # FIXED: was hardcoded 9
 
 
 def run(
@@ -24,14 +25,12 @@ def run(
     n_teams   = len(all_teams)
     counts    = np.zeros((n_teams, len(ALL_STAGES)), dtype=np.int64)
 
-    # ── Step 1: Precompute score cache ───────────────────────
     if verbose:
         print("  Precomputing score matrices...")
     score_cache = build_score_cache(lambdas, rho)
     if verbose:
         print(f"  Cached {len(score_cache)} matchups in 0.1s")
 
-    # ── Step 2: Batch simulate group stage ───────────────────
     if verbose:
         print(f"  Simulating group stage ({n_simulations:,} iterations)...")
 
@@ -40,7 +39,6 @@ def run(
     for g, result in group_results.items():
         group_standings[g] = get_standings(result, n_simulations)
 
-    # ── Step 3: Build R32 lineup per simulation ──────────────
     if verbose:
         print("  Determining qualified teams...")
 
@@ -69,43 +67,50 @@ def run(
             third_gf[g_i][mask3]   = result["gf"][local_i][mask3]
             third_tidx[g_i][mask3] = ti
 
-    # Select best 8 third-place teams per simulation
+    # IMPROVED: vectorized best8 selection using argsort
     scores_3rd = np.stack(
         [third_pts, third_gd, third_gf], axis=2
     ).transpose(1, 0, 2)  # (n_sims, 12, 3)
 
+    # Encode all 3 criteria into a single sortable integer
+    # pts*10000 + gd_offset*100 + gf_offset — avoids Python loop per sim
+    GD_OFFSET = 50   # shift gd (can be negative) to positive
+    GF_MAX    = 99
+    sort_key  = (
+        scores_3rd[:, :, 0] * 10000 +
+        (scores_3rd[:, :, 1] + GD_OFFSET) * 100 +
+        np.clip(scores_3rd[:, :, 2], 0, GF_MAX)
+    )  # (n_sims, 12)
+
+    # Argsort descending — vectorized across all sims
+    order = np.argsort(-sort_key, axis=1)  # (n_sims, 12)
+    top8  = order[:, :THIRD_PLACE_SLOTS]   # (n_sims, 8)
+
     best8 = np.zeros((THIRD_PLACE_SLOTS, n_simulations), dtype=np.int32)
-    for sim in range(n_simulations):
-        s     = scores_3rd[sim]
-        order = np.lexsort((-s[:, 2], -s[:, 1], -s[:, 0]))
-        best8[:, sim] = third_tidx[order[:THIRD_PLACE_SLOTS], sim]
+    for slot in range(THIRD_PLACE_SLOTS):
+        group_indices = top8[:, slot]        # (n_sims,)
+        best8[slot]   = third_tidx[
+            group_indices,
+            np.arange(n_simulations)
+        ]
 
-    # Full R32 lineup
-    r32 = np.vstack([qualified, best8])  # (32, n_sims)
+    r32 = np.vstack([qualified, best8])
 
-    # FIXED: group qualification % = how often each team made R32
     for sim in range(n_simulations):
         for ti in np.unique(r32[:, sim]):
             counts[ti, ALL_STAGES.index("group")] += 1
 
-    # FIXED: r32 count = same as group qualification (making R32 IS qualifying)
     for sim in range(n_simulations):
         for ti in np.unique(r32[:, sim]):
             counts[ti, ALL_STAGES.index("r32")] += 1
 
-    # ── Step 4: Knockout rounds ──────────────────────────────
     if verbose:
         print("  Simulating knockout rounds...")
 
     current  = r32.copy()
-    ko_stage_map = {
-        0: "r16",
-        1: "qf",
-        2: "sf",
-        3: "final",
-    }
+    ko_stage_map = {0: "r16", 1: "qf", 2: "sf", 3: "final"}
 
-    for round_i in range(4):   # R32→R16, R16→QF, QF→SF, SF→Final
+    for round_i in range(4):
         n_matches  = current.shape[0] // 2
         next_round = np.zeros((n_matches, n_simulations), dtype=np.int32)
 
@@ -124,12 +129,13 @@ def run(
                     continue
                 ta  = all_teams[ai]
                 tb  = all_teams[bi]
-                key = (ta, tb) if (ta, tb) in score_cache else (tb, ta)
+                key  = (ta, tb) if (ta, tb) in score_cache else (tb, ta)
                 swap = key != (ta, tb)
-                idxs = np.random.choice(len(score_cache[key]),
-                                        size=n_this, p=score_cache[key])
-                g1 = idxs // 9
-                g2 = idxs %  9
+                flat = score_cache[key]
+                idxs = np.random.choice(len(flat), size=n_this, p=flat)
+                # FIXED: use _STRIDE instead of hardcoded 9
+                g1 = idxs // _STRIDE
+                g2 = idxs %  _STRIDE
                 if swap:
                     g1, g2 = g2, g1
                 ga[mask] = g1
@@ -148,15 +154,12 @@ def run(
 
         current = next_round
 
-        # Count teams that WON this round = advanced to next stage
         stage_name = ko_stage_map[round_i]
         stage_col  = ALL_STAGES.index(stage_name)
         for sim in range(n_simulations):
             for ti in np.unique(current[:, sim]):
                 counts[ti, stage_col] += 1
 
-    # ── Champion ─────────────────────────────────────────────
-    # current = (1, n_sims) after Final
     champions = current[0]
     np.add.at(counts[:, ALL_STAGES.index("champion")], champions, 1)
 

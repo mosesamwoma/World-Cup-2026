@@ -1,8 +1,10 @@
 # ============================================================
 #  Dixon-Coles Poisson model with rho low-score correction
-#  Vectorized for speed
+#  Fixed: filter teams with 10+ matches to reduce parameters
+#         and allow convergence
 # ============================================================
 import numpy as np
+import pandas as pd
 from scipy.optimize import minimize
 from scipy.stats import poisson
 from src.config import MAX_GOALS
@@ -88,11 +90,25 @@ def neg_log_likelihood(params, home_teams, away_teams, home_goals, away_goals, w
 def fit(df, weight_col: str = "final_weight"):
     """
     Fit Dixon-Coles model to match dataframe.
-    df needs: home_team, away_team, home_score, away_score, <weight_col>
+    Fixed: filters to teams with 10+ matches — reduces parameters
+           from 642 to ~200 and allows proper convergence.
     """
     df = df.dropna(subset=["home_score", "away_score"]).copy()
     df["home_score"] = df["home_score"].astype(int)
     df["away_score"] = df["away_score"].astype(int)
+
+    # FIXED: only fit on teams with 10+ matches
+    # 321 teams = 642 params = too many for optimizer to converge
+    # Filtering to active teams reduces to ~150 teams = 300 params
+    match_counts = (
+        pd.concat([df["home_team"], df["away_team"]])
+        .value_counts()
+    )
+    active_teams = set(match_counts[match_counts >= 10].index)
+    df = df[
+        df["home_team"].isin(active_teams) &
+        df["away_team"].isin(active_teams)
+    ].copy()
 
     teams = sorted(set(df["home_team"]) | set(df["away_team"]))
     n = len(teams)
@@ -123,12 +139,12 @@ def fit(df, weight_col: str = "final_weight"):
         ),
         method="L-BFGS-B",
         bounds=bounds,
-        # FIXED: increased maxiter and relaxed tolerances so it converges
         options={"maxiter": 500, "ftol": 1e-7, "gtol": 1e-6},
     )
 
     params = result.x
     print(f"  Converged: {result.success} — {result.message}")
+    print(f"  Teams fitted: {n}  |  Matches used: {len(df):,}")
 
     return {
         "teams":    teams,
@@ -142,11 +158,15 @@ def fit(df, weight_col: str = "final_weight"):
 def predict(team_a: str, team_b: str, params: dict, neutral: bool = True) -> dict:
     """Predict match outcome using fitted Dixon-Coles params."""
     home_adv = 0.0 if neutral else params["home_adv"]
-    lam_a = np.exp(params["attack"].get(team_a, 0)
-                   + params["defence"].get(team_b, 0)
-                   + home_adv)
-    lam_b = np.exp(params["attack"].get(team_b, 0)
-                   + params["defence"].get(team_a, 0))
+    lam_a = np.exp(
+        params["attack"].get(team_a, 0) +
+        params["defence"].get(team_b, 0) +
+        home_adv
+    )
+    lam_b = np.exp(
+        params["attack"].get(team_b, 0) +
+        params["defence"].get(team_a, 0)
+    )
 
     matrix = score_matrix(lam_a, lam_b, params["rho"])
     probs  = match_probs(matrix)
