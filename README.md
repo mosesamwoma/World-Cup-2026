@@ -7,7 +7,7 @@ Live dashboard: https://world-cup-2026-ai.streamlit.app/
 
 
 ## docs
-For detailed documentation, methodology, and API reference, see docs.md
+For more detailed information, see [docs.md](docs.md)
 
 ---
 
