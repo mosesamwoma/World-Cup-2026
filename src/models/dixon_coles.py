@@ -1,7 +1,6 @@
 # ============================================================
 #  Dixon-Coles Poisson model with rho low-score correction
-#  Fixed: filter teams with 10+ matches to reduce parameters
-#         and allow convergence
+#  Fixed: 20+ match filter + maxiter 1000 for convergence
 # ============================================================
 import numpy as np
 import pandas as pd
@@ -50,8 +49,8 @@ def match_probs(matrix: np.ndarray) -> dict:
 
 
 def neg_log_likelihood(params, home_teams, away_teams, home_goals, away_goals, weights, teams):
-    """Vectorized negative log-likelihood — no Python loop over matches."""
-    n = len(teams)
+    """Vectorized negative log-likelihood."""
+    n        = len(teams)
     team_idx = {t: i for i, t in enumerate(teams)}
 
     attack   = params[:n]
@@ -89,33 +88,31 @@ def neg_log_likelihood(params, home_teams, away_teams, home_goals, away_goals, w
 
 def fit(df, weight_col: str = "final_weight"):
     """
-    Fit Dixon-Coles model to match dataframe.
-    Fixed: filters to teams with 10+ matches — reduces parameters
-           from 642 to ~200 and allows proper convergence.
+    Fit Dixon-Coles model.
+    FIXED: filter to 20+ matches (was 10) — reduces to ~150 teams
+           maxiter increased to 1000 for convergence
     """
     df = df.dropna(subset=["home_score", "away_score"]).copy()
     df["home_score"] = df["home_score"].astype(int)
     df["away_score"] = df["away_score"].astype(int)
 
-    # FIXED: only fit on teams with 10+ matches
-    # 321 teams = 642 params = too many for optimizer to converge
-    # Filtering to active teams reduces to ~150 teams = 300 params
+    # FIXED: 20+ matches threshold — reduces parameter count further
     match_counts = (
         pd.concat([df["home_team"], df["away_team"]])
         .value_counts()
     )
-    active_teams = set(match_counts[match_counts >= 10].index)
+    active_teams = set(match_counts[match_counts >= 20].index)
     df = df[
         df["home_team"].isin(active_teams) &
         df["away_team"].isin(active_teams)
     ].copy()
 
     teams = sorted(set(df["home_team"]) | set(df["away_team"]))
-    n = len(teams)
+    n     = len(teams)
 
     print(f"  Fitting Dixon-Coles on {len(df):,} matches, {n} teams...")
 
-    x0 = np.zeros(2 * n + 2)
+    x0          = np.zeros(2 * n + 2)
     x0[2*n]     =  0.1
     x0[2*n + 1] = -0.1
 
@@ -139,7 +136,8 @@ def fit(df, weight_col: str = "final_weight"):
         ),
         method="L-BFGS-B",
         bounds=bounds,
-        options={"maxiter": 500, "ftol": 1e-7, "gtol": 1e-6},
+        # FIXED: maxiter 1000, relaxed tolerances
+        options={"maxiter": 1000, "ftol": 1e-6, "gtol": 1e-5},
     )
 
     params = result.x
@@ -167,7 +165,6 @@ def predict(team_a: str, team_b: str, params: dict, neutral: bool = True) -> dic
         params["attack"].get(team_b, 0) +
         params["defence"].get(team_a, 0)
     )
-
     matrix = score_matrix(lam_a, lam_b, params["rho"])
     probs  = match_probs(matrix)
     probs.update({"lambda_a": round(lam_a, 4), "lambda_b": round(lam_b, 4)})
