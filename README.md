@@ -6,7 +6,7 @@ A probabilistic World Cup 2026 forecasting engine using an ensemble of XGBoost, 
 Live dashboard: https://world-cup-2026-ai.streamlit.app/
 
 
-## docs
+## Docs
 For more detailed information, see [docs.md](docs.md)
 
 ---
