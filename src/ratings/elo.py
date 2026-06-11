@@ -1,21 +1,20 @@
 # ============================================================
 #  Dynamic Elo rating engine
-#  Improved: vectorized build_elo_history, confederation adjustment
+#  Fixed: stronger confederation adjustments
 # ============================================================
 import pandas as pd
 import numpy as np
 from src.config import BASE_ELO, HOME_ADVANTAGE, K_FACTOR_BASE
 
-# IMPROVED: confederation strength adjustment
-# AFC/OFC teams beat weak opponents — deflate their ratings slightly
+# FIXED: stronger adjustments — AFC/OFC were still inflated
 CONFEDERATION_ADJUSTMENT = {
     "UEFA":     0.0,
     "CONMEBOL": 0.0,
     "CAF":      0.0,
-    "AFC":     -30.0,
-    "CONCACAF": -20.0,
-    "OFC":     -60.0,
-    "Unknown":  -20.0,
+    "AFC":     -80.0,
+    "CONCACAF": -50.0,
+    "OFC":     -150.0,
+    "Unknown":  -50.0,
 }
 
 
@@ -42,35 +41,26 @@ def update_elo(
 ) -> tuple:
     home_bonus = 0.0 if neutral else HOME_ADVANTAGE
     adj_elo_a  = elo_a + home_bonus
-
-    exp_a    = expected_score(adj_elo_a, elo_b)
-    actual_a = 1.0 if goals_a > goals_b else (0.5 if goals_a == goals_b else 0.0)
-
-    gd    = abs(goals_a - goals_b)
-    k     = K_FACTOR_BASE * goal_index(gd) * comp_weight
-    delta = k * (actual_a - exp_a)
-
+    exp_a      = expected_score(adj_elo_a, elo_b)
+    actual_a   = 1.0 if goals_a > goals_b else (0.5 if goals_a == goals_b else 0.0)
+    gd         = abs(goals_a - goals_b)
+    k          = K_FACTOR_BASE * goal_index(gd) * comp_weight
+    delta      = k * (actual_a - exp_a)
     return round(elo_a + delta, 4), round(elo_b - delta, 4)
 
 
 def build_elo_history(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Walk through all matches chronologically and compute
-    pre-match Elo for every row.
-    """
+    """Walk through all matches chronologically and compute pre-match Elo."""
     ratings: dict = {}
     elo_home_pre, elo_away_pre = [], []
 
     for _, row in df.sort_values("date").iterrows():
         home = row["home_team"]
         away = row["away_team"]
-
         r_home = ratings.get(home, BASE_ELO)
         r_away = ratings.get(away, BASE_ELO)
-
         elo_home_pre.append(r_home)
         elo_away_pre.append(r_away)
-
         new_home, new_away = update_elo(
             r_home, r_away,
             int(row["home_score"]), int(row["away_score"]),
@@ -107,8 +97,9 @@ def current_ratings(df: pd.DataFrame) -> dict:
 
 def adjusted_ratings(df: pd.DataFrame) -> dict:
     """
-    IMPROVED: current ratings with confederation strength adjustment.
-    Corrects AFC/OFC inflation from beating weak opponents.
+    Current ratings with confederation strength adjustment.
+    FIXED: stronger offsets — AFC/OFC were still inflated after previous fix.
+    UEFA/CONMEBOL/CAF unchanged — they play each other enough for self-correction.
     """
     from src.preprocessing.normalize import get_confederation
     ratings = current_ratings(df)
