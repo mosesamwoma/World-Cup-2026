@@ -2,8 +2,12 @@
 
 A probabilistic World Cup 2026 forecasting engine using an ensemble of XGBoost, Dixon–Coles Poisson modeling, dynamic Elo ratings, and Monte Carlo simulation to generate data-driven match outcomes and tournament probabilities.
 
-
+## Dashbord
 Live dashboard: https://world-cup-2026-ai.streamlit.app/
+
+
+## docs
+For detailed documentation, methodology, and API reference, see docs.md
 
 ---
 
@@ -42,3 +46,4 @@ python run.py --mode simulate --n 100000
 # 4. Launch dashboard
 python run.py --mode dashboard
 ```
+---
