@@ -24,13 +24,34 @@ for _dir in [DATA_RAW, DATA_PROCESSED, DATA_EXTERNAL, MODELS_DIR,
              OUTPUTS_DIR / "tournament_probabilities"]:
     _dir.mkdir(parents=True, exist_ok=True)
 
-# Elo — reduced K-factor so recent matches don't swing ratings too much
+# Elo
 BASE_ELO        = 1500
 HOME_ADVANTAGE  = 65
 K_FACTOR_BASE   = 20
 
-# Temporal decay
-LAMBDA_DECAY    = 0.25
+# ── Temporal decay ────────────────────────────────────────────
+# Formula: weight = exp(-LAMBDA_DECAY * years_ago)
+#
+# CHANGED from 0.25 → 0.01 so ALL historical data contributes.
+#
+# The old value (0.25) was too aggressive:
+#   10 yrs ago →  8.2% weight  (basically ignored)
+#   20 yrs ago →  0.7% weight  (completely ignored)
+# This forced a "2000-01-01" date cutoff in the pipeline just
+# to avoid fitting on near-zero-weight matches. That cutoff
+# excluded smaller nations with fewer recent matches entirely.
+#
+# The new value (0.01) is very gentle:
+#    1 yr ago  → 99.0% weight
+#    5 yrs ago → 95.1% weight
+#   10 yrs ago → 90.5% weight
+#   20 yrs ago → 81.9% weight
+#   30 yrs ago → 74.1% weight
+#   50 yrs ago → 60.7% weight
+#
+# Every match matters. Recent form still weighted higher.
+# No date cutoff needed in the pipeline.
+LAMBDA_DECAY    = 0.01
 
 # Competition importance weights
 COMPETITION_WEIGHTS = {
