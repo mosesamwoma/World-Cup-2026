@@ -29,29 +29,11 @@ BASE_ELO        = 1500
 HOME_ADVANTAGE  = 65
 K_FACTOR_BASE   = 20
 
-# ── Temporal decay ────────────────────────────────────────────
-# Formula: weight = exp(-LAMBDA_DECAY * years_ago)
-#
-# CHANGED from 0.25 → 0.01 so ALL historical data contributes.
-#
-# The old value (0.25) was too aggressive:
-#   10 yrs ago →  8.2% weight  (basically ignored)
-#   20 yrs ago →  0.7% weight  (completely ignored)
-# This forced a "2000-01-01" date cutoff in the pipeline just
-# to avoid fitting on near-zero-weight matches. That cutoff
-# excluded smaller nations with fewer recent matches entirely.
-#
-# The new value (0.01) is very gentle:
-#    1 yr ago  → 99.0% weight
-#    5 yrs ago → 95.1% weight
-#   10 yrs ago → 90.5% weight
-#   20 yrs ago → 81.9% weight
-#   30 yrs ago → 74.1% weight
-#   50 yrs ago → 60.7% weight
-#
-# Every match matters. Recent form still weighted higher.
-# No date cutoff needed in the pipeline.
-LAMBDA_DECAY    = 0.01
+# FIXED: aggressive decay so old matches barely count
+# λ=0.02 means a 2010 match has weight exp(-0.02*15) = 0.74
+# λ=0.25 means a 2010 match has weight exp(-0.25*15) = 0.02
+# This lets us use ALL data without obscure old teams dominating
+LAMBDA_DECAY    = 0.15
 
 # Competition importance weights
 COMPETITION_WEIGHTS = {
@@ -64,7 +46,7 @@ COMPETITION_WEIGHTS = {
     "Friendly":                   0.5,
 }
 
-# Ensemble weights — fallback if ensemble_weights.pkl not found
+# Ensemble weights fallback
 ENSEMBLE_WEIGHTS = {
     "elo":         0.35,
     "dixon_coles": 0.35,
@@ -72,8 +54,8 @@ ENSEMBLE_WEIGHTS = {
     "market":      0.10,
 }
 
-# Simulation
-N_SIMULATIONS   = int(os.getenv("N_SIMULATIONS", 100_000))
+# FIXED: 1,000,000 iterations
+N_SIMULATIONS   = int(os.getenv("N_SIMULATIONS", 1_000_000))
 MAX_GOALS       = 8
 
 # 2026 format

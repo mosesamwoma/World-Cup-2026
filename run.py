@@ -3,7 +3,7 @@
 Usage:
     python run.py --mode train
     python run.py --mode train_ensemble
-    python run.py --mode simulate --n 100000
+    python run.py --mode simulate --n 1000000
     python run.py --mode dashboard
 """
 import argparse
@@ -20,8 +20,10 @@ def main():
         choices=["train", "train_ensemble", "simulate", "dashboard"],
         required=True
     )
-    parser.add_argument("--n", type=int, default=100_000,
-                        help="Monte Carlo iterations")
+    parser.add_argument(
+        "--n", type=int, default=1_000_000,
+        help="Monte Carlo iterations (default: 1,000,000)"
+    )
     args = parser.parse_args()
 
     if args.mode == "train":

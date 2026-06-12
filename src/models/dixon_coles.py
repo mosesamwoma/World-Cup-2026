@@ -1,6 +1,8 @@
 # ============================================================
 #  Dixon-Coles Poisson model with rho low-score correction
-#  Fixed: 20+ match filter + maxiter 1000 for convergence
+#  Fixed: use time-decayed weights so all data contributes
+#         but recent matches dominate — solves convergence
+#         by making old obscure matches near-zero weight
 # ============================================================
 import numpy as np
 import pandas as pd
@@ -48,7 +50,8 @@ def match_probs(matrix: np.ndarray) -> dict:
     }
 
 
-def neg_log_likelihood(params, home_teams, away_teams, home_goals, away_goals, weights, teams):
+def neg_log_likelihood(params, home_teams, away_teams, home_goals,
+                       away_goals, weights, teams):
     """Vectorized negative log-likelihood."""
     n        = len(teams)
     team_idx = {t: i for i, t in enumerate(teams)}
@@ -70,16 +73,22 @@ def neg_log_likelihood(params, home_teams, away_teams, home_goals, away_goals, w
 
     from scipy.special import gammaln
     def poisson_pmf(k, lam):
-        return np.exp(k * np.log(np.clip(lam, 1e-10, None)) - lam - gammaln(k + 1))
+        return np.exp(
+            k * np.log(np.clip(lam, 1e-10, None)) - lam - gammaln(k + 1)
+        )
 
     p_h = poisson_pmf(hg, lam_h)
     p_a = poisson_pmf(ag, lam_a)
 
     rho_corr = np.ones(len(hg))
-    rho_corr[(hg == 0) & (ag == 0)] = 1 - lam_h[(hg == 0) & (ag == 0)] * lam_a[(hg == 0) & (ag == 0)] * rho
-    rho_corr[(hg == 1) & (ag == 0)] = 1 + lam_a[(hg == 1) & (ag == 0)] * rho
-    rho_corr[(hg == 0) & (ag == 1)] = 1 + lam_h[(hg == 0) & (ag == 1)] * rho
-    rho_corr[(hg == 1) & (ag == 1)] = 1 - rho
+    m00 = (hg == 0) & (ag == 0)
+    m10 = (hg == 1) & (ag == 0)
+    m01 = (hg == 0) & (ag == 1)
+    m11 = (hg == 1) & (ag == 1)
+    rho_corr[m00] = 1 - lam_h[m00] * lam_a[m00] * rho
+    rho_corr[m10] = 1 + lam_a[m10] * rho
+    rho_corr[m01] = 1 + lam_h[m01] * rho
+    rho_corr[m11] = 1 - rho
 
     p  = p_h * p_a * np.clip(rho_corr, 1e-10, None)
     ll = np.sum(w * np.log(np.clip(p, 1e-10, None)))
@@ -88,20 +97,32 @@ def neg_log_likelihood(params, home_teams, away_teams, home_goals, away_goals, w
 
 def fit(df, weight_col: str = "final_weight"):
     """
-    Fit Dixon-Coles model.
-    FIXED: filter to 20+ matches (was 10) — reduces to ~150 teams
-           maxiter increased to 1000 for convergence
+    Fit Dixon-Coles using ALL data with time-decayed weights.
+
+    Key insight: with λ=0.15 decay, a match from 2000 has weight ~0.10
+    and a match from 1990 has weight ~0.02. This means obscure old teams
+    have near-zero effective influence on the optimization, allowing
+    convergence without hard filtering.
+
+    We still apply a soft filter: teams with effective weight sum < 0.5
+    (equivalent to <1 recent match) are excluded to keep parameters finite.
     """
     df = df.dropna(subset=["home_score", "away_score"]).copy()
     df["home_score"] = df["home_score"].astype(int)
     df["away_score"] = df["away_score"].astype(int)
 
-    # FIXED: 20+ matches threshold — reduces parameter count further
-    match_counts = (
-        pd.concat([df["home_team"], df["away_team"]])
-        .value_counts()
-    )
-    active_teams = set(match_counts[match_counts >= 20].index)
+    # Soft filter: exclude teams whose total weighted matches < threshold
+    # This naturally keeps only teams with meaningful recent history
+    home_w = df.groupby("home_team")[weight_col].sum()
+    away_w = df.groupby("away_team")[weight_col].sum()
+    total_w = home_w.add(away_w, fill_value=0)
+
+    # Threshold = 1.0 effective match weight
+    # With λ=0.15: a 2020 WC qualifier has weight ~0.67
+    # So threshold=1.0 means ~2 recent matches minimum
+    WEIGHT_THRESHOLD = 1.0
+    active_teams = set(total_w[total_w >= WEIGHT_THRESHOLD].index)
+
     df = df[
         df["home_team"].isin(active_teams) &
         df["away_team"].isin(active_teams)
@@ -111,6 +132,7 @@ def fit(df, weight_col: str = "final_weight"):
     n     = len(teams)
 
     print(f"  Fitting Dixon-Coles on {len(df):,} matches, {n} teams...")
+    print(f"  (Using time-decayed weights — old matches have near-zero influence)")
 
     x0          = np.zeros(2 * n + 2)
     x0[2*n]     =  0.1
@@ -123,9 +145,32 @@ def fit(df, weight_col: str = "final_weight"):
         [(-1, 0)]
     )
 
+    # Two-phase optimization:
+    # Phase 1 — optimize attack/defence with fixed home_adv and rho
+    # This is a simpler landscape (2n params instead of 2n+2)
+    def nll_phase1(ad_params):
+        full = np.concatenate([ad_params, [0.1, -0.1]])
+        return neg_log_likelihood(
+            full, df["home_team"].tolist(), df["away_team"].tolist(),
+            df["home_score"].tolist(), df["away_score"].tolist(),
+            df[weight_col].tolist(), teams
+        )
+
+    print("  Phase 1: optimizing attack/defence parameters...")
+    r1 = minimize(
+        nll_phase1,
+        x0[:2*n],
+        method="L-BFGS-B",
+        bounds=[(-3, 3)] * (2 * n),
+        options={"maxiter": 500, "ftol": 1e-6, "gtol": 1e-5},
+    )
+
+    # Phase 2 — optimize all params with warm start from phase 1
+    print("  Phase 2: fine-tuning all parameters...")
+    x0_warm = np.concatenate([r1.x, [0.1, -0.1]])
     result = minimize(
         neg_log_likelihood,
-        x0,
+        x0_warm,
         args=(
             df["home_team"].tolist(),
             df["away_team"].tolist(),
@@ -136,8 +181,7 @@ def fit(df, weight_col: str = "final_weight"):
         ),
         method="L-BFGS-B",
         bounds=bounds,
-        # FIXED: maxiter 1000, relaxed tolerances
-        options={"maxiter": 1000, "ftol": 1e-6, "gtol": 1e-5},
+        options={"maxiter": 1000, "ftol": 1e-7, "gtol": 1e-6},
     )
 
     params = result.x

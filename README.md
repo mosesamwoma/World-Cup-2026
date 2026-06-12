@@ -41,7 +41,7 @@ python run.py --mode train
 python run.py --mode train_ensemble
 
 # 3. Run Monte Carlo simulation (100K tournament iterations)
-python run.py --mode simulate --n 100000
+python run.py --mode simulate --n 1000000
 
 # 4. Launch dashboard
 python run.py --mode dashboard

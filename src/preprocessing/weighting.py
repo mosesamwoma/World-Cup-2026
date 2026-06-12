@@ -1,5 +1,6 @@
 # ============================================================
 #  Temporal decay + competition importance weighting
+#  Fixed: uses LAMBDA_DECAY from config (now 0.15)
 # ============================================================
 import numpy as np
 from datetime import date
@@ -17,5 +18,6 @@ def competition_weight(competition: str) -> float:
     return COMPETITION_WEIGHTS.get(competition, 1.0)
 
 
-def final_weight(match_date: date, competition: str, reference_date: date = None) -> float:
+def final_weight(match_date: date, competition: str,
+                 reference_date: date = None) -> float:
     return time_weight(match_date, reference_date) * competition_weight(competition)
