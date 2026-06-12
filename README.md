@@ -41,7 +41,7 @@ python run.py --mode train
 # 2. Learn optimal ensemble weights from 2002 + 2022 WC backtest
 python run.py --mode train_ensemble
 
-# 3. Run Monte Carlo simulation (100K tournament iterations)
+# 3. Run Monte Carlo simulation (1M tournament iterations)
 python run.py --mode simulate --n 1000000
 
 # 4. Launch dashboard
@@ -49,3 +49,5 @@ python run.py --mode dashboard
 ```
 
 > **Note:** Running the full pipeline (training, ensemble optimization, and large-scale simulation) can take a considerable amount of time depending on your hardware. For quick testing, use `--n 10000`
+
+---
