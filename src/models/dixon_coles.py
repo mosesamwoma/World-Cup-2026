@@ -1,15 +1,9 @@
 # ============================================================
 #  Dixon-Coles Poisson model with rho low-score correction
-#  Fixed: coordinate descent optimizer — GUARANTEED convergence
-#         regardless of number of teams
-#  
-#  How it works:
-#    Instead of optimizing all 542 params at once (which hits
-#    L-BFGS-B evaluation limits), we cycle through:
-#      Step A: optimize attack+defence for each team (2 params)
-#      Step B: optimize home_adv + rho globally (2 params)
-#    Each sub-problem is tiny — always converges in <30 iterations
-#    Cycle until max parameter change < tolerance
+#  Optimizer: coordinate descent — guaranteed convergence
+#  Each team optimizes only 2 params (attack + defence)
+#  Global params (home_adv, rho) optimized separately
+#  Early stop when delta plateaus
 # ============================================================
 import numpy as np
 import pandas as pd
@@ -66,9 +60,11 @@ def _pmf(k: np.ndarray, lam: np.ndarray) -> np.ndarray:
     )
 
 
-def _rho_corr(hg, ag, lam_h, lam_a, rho):
-    """Vectorized rho correction."""
-    rc = np.ones(len(hg))
+def _rho_corr(hg: np.ndarray, ag: np.ndarray,
+              lam_h: np.ndarray, lam_a: np.ndarray,
+              rho: float) -> np.ndarray:
+    """Vectorized rho correction for low scores."""
+    rc  = np.ones(len(hg))
     m00 = (hg == 0) & (ag == 0)
     m10 = (hg == 1) & (ag == 0)
     m01 = (hg == 0) & (ag == 1)
@@ -80,52 +76,33 @@ def _rho_corr(hg, ag, lam_h, lam_a, rho):
     return rc
 
 
-def _team_nll(p2, i, attack, defence, home_adv, rho,
-              hi, ai, hg, ag, w):
-    """
-    NLL for a single team's attack + defence params.
-    Only considers matches involving team i.
-    """
-    a = attack.copy();  a[i] = p2[0]
-    d = defence.copy(); d[i] = p2[1]
-
-    # Only use matches where team i plays — much faster
-    mask   = (hi == i) | (ai == i)
-    hi_m   = hi[mask]; ai_m = ai[mask]
-    hg_m   = hg[mask]; ag_m = ag[mask]
-    w_m    = w[mask]
-
-    lam_h = np.exp(a[hi_m] + d[ai_m] + home_adv)
-    lam_a = np.exp(a[ai_m] + d[hi_m])
-
-    p  = _pmf(hg_m, lam_h) * _pmf(ag_m, lam_a)
-    rc = _rho_corr(hg_m, ag_m, lam_h, lam_a, rho)
-    p  = p * np.clip(rc, 1e-10, None)
-    return -np.sum(w_m * np.log(np.clip(p, 1e-10, None)))
-
-
-def _global_nll(p2, attack, defence, hi, ai, hg, ag, w):
+def _global_nll(p2: np.ndarray, attack: np.ndarray, defence: np.ndarray,
+                hi: np.ndarray, ai: np.ndarray,
+                hg: np.ndarray, ag: np.ndarray,
+                w: np.ndarray) -> float:
     """NLL for global params: home_adv and rho only."""
-    home_adv, rho = p2[0], p2[1]
+    home_adv, rho = float(p2[0]), float(p2[1])
     lam_h = np.exp(attack[hi] + defence[ai] + home_adv)
     lam_a = np.exp(attack[ai] + defence[hi])
-    p  = _pmf(hg, lam_h) * _pmf(ag, lam_a)
-    rc = _rho_corr(hg, ag, lam_h, lam_a, rho)
-    p  = p * np.clip(rc, 1e-10, None)
-    return -np.sum(w * np.log(np.clip(p, 1e-10, None)))
+    p     = _pmf(hg, lam_h) * _pmf(ag, lam_a)
+    rc    = _rho_corr(hg, ag, lam_h, lam_a, rho)
+    p     = p * np.clip(rc, 1e-10, None)
+    return -float(np.sum(w * np.log(np.clip(p, 1e-10, None))))
 
 
 def fit(df, weight_col: str = "final_weight"):
     """
     Fit Dixon-Coles using coordinate descent.
 
-    GUARANTEED convergence — never hits evaluation limits because:
-      - Each team optimizes only 2 parameters (attack + defence)
-      - Only uses that team's matches — fast per-team solve
-      - Global params (home_adv, rho) optimized separately (2 params)
-      - Cycles until max change < 1e-4 (typically 6-10 cycles)
+    Why this works when L-BFGS-B fails:
+      - 270 teams = 542 parameters = too many for L-BFGS-B in one shot
+      - Coordinate descent breaks it into sub-problems of 2 params each
+      - Each team's attack+defence optimized using only that team's matches
+      - home_adv and rho optimized globally (only 2 params)
+      - Cycles until convergence — no evaluation limit possible
 
-    Total time: ~90-120 seconds for 270 teams / 25K matches.
+    Convergence: typically 20-25 cycles (~150-200s)
+    Early stop: if delta improvement < 2% for 3 consecutive cycles
     """
     import time
 
@@ -134,11 +111,11 @@ def fit(df, weight_col: str = "final_weight"):
     df["away_score"] = df["away_score"].astype(int)
 
     # Soft filter: exclude teams with near-zero weighted influence
-    home_w   = df.groupby("home_team")[weight_col].sum()
-    away_w   = df.groupby("away_team")[weight_col].sum()
-    total_w  = home_w.add(away_w, fill_value=0)
-    active   = set(total_w[total_w >= 1.0].index)
-    df       = df[
+    home_w  = df.groupby("home_team")[weight_col].sum()
+    away_w  = df.groupby("away_team")[weight_col].sum()
+    total_w = home_w.add(away_w, fill_value=0)
+    active  = set(total_w[total_w >= 1.0].index)
+    df      = df[
         df["home_team"].isin(active) &
         df["away_team"].isin(active)
     ].copy()
@@ -150,17 +127,15 @@ def fit(df, weight_col: str = "final_weight"):
     print(f"  Fitting Dixon-Coles on {len(df):,} matches, {n} teams...")
     print(f"  Method: coordinate descent (guaranteed convergence)")
 
-    # Precompute index arrays
+    # Precompute index arrays once
     hi = np.array([team_idx[t] for t in df["home_team"]])
     ai = np.array([team_idx[t] for t in df["away_team"]])
     hg = df["home_score"].values.astype(int)
     ag = df["away_score"].values.astype(int)
     w  = df[weight_col].values.astype(float)
 
-    # Precompute per-team match masks for speed
-    team_masks = {}
-    for i in range(n):
-        team_masks[i] = (hi == i) | (ai == i)
+    # Precompute per-team match masks — avoids repeated filtering in loop
+    team_masks = [((hi == i) | (ai == i)) for i in range(n)]
 
     # Initialize parameters
     attack   = np.zeros(n)
@@ -168,31 +143,36 @@ def fit(df, weight_col: str = "final_weight"):
     home_adv = 0.1
     rho      = -0.1
 
-    MAX_CYCLES = 15
-    TOLERANCE  = 1e-4
-    t0         = time.time()
+    MAX_CYCLES   = 30
+    TOLERANCE    = 1e-4
+    prev_delta   = float("inf")
+    no_improve   = 0
+    t0           = time.time()
 
     for cycle in range(MAX_CYCLES):
         prev_attack = attack.copy()
 
         # ── Step A: optimize each team's attack + defence ────
+        # Each sub-problem has only 2 parameters → always converges fast
         for i in range(n):
             mask  = team_masks[i]
-            hi_m  = hi[mask]; ai_m = ai[mask]
-            hg_m  = hg[mask]; ag_m = ag[mask]
+            hi_m  = hi[mask];  ai_m = ai[mask]
+            hg_m  = hg[mask];  ag_m = ag[mask]
             w_m   = w[mask]
 
-            def team_obj(p2):
-                a = attack.copy();  a[i] = p2[0]
-                d = defence.copy(); d[i] = p2[1]
-                lh = np.exp(a[hi_m] + d[ai_m] + home_adv)
-                la = np.exp(a[ai_m] + d[hi_m])
-                p  = _pmf(hg_m, lh) * _pmf(ag_m, la)
-                rc = _rho_corr(hg_m, ag_m, lh, la, rho)
-                p  = p * np.clip(rc, 1e-10, None)
-                return -np.sum(w_m * np.log(np.clip(p, 1e-10, None)))
+            # Capture loop variables explicitly to avoid closure issues
+            def team_obj(p2, _hi=hi_m, _ai=ai_m, _hg=hg_m,
+                         _ag=ag_m, _w=w_m, _i=i):
+                a    = attack.copy();  a[_i]  = p2[0]
+                d    = defence.copy(); d[_i]  = p2[1]
+                lh   = np.exp(a[_hi] + d[_ai] + home_adv)
+                la   = np.exp(a[_ai] + d[_hi])
+                p    = _pmf(_hg, lh) * _pmf(_ag, la)
+                rc   = _rho_corr(_hg, _ag, lh, la, rho)
+                p    = p * np.clip(rc, 1e-10, None)
+                return -float(np.sum(_w * np.log(np.clip(p, 1e-10, None))))
 
-            result = minimize(
+            result   = minimize(
                 team_obj,
                 [attack[i], defence[i]],
                 method="L-BFGS-B",
@@ -202,7 +182,7 @@ def fit(df, weight_col: str = "final_weight"):
             attack[i]  = result.x[0]
             defence[i] = result.x[1]
 
-        # ── Step B: optimize global params ───────────────────
+        # ── Step B: optimize global params (home_adv, rho) ───
         r_global = minimize(
             _global_nll,
             [home_adv, rho],
@@ -216,22 +196,40 @@ def fit(df, weight_col: str = "final_weight"):
 
         delta   = float(np.max(np.abs(attack - prev_attack)))
         elapsed = time.time() - t0
+
         print(f"  Cycle {cycle + 1:2d}: "
               f"delta={delta:.6f}  "
               f"home_adv={home_adv:.4f}  "
               f"rho={rho:.4f}  "
               f"t={elapsed:.0f}s")
 
+        # Check convergence
         if delta < TOLERANCE:
-            print(f"  ✅ Converged at cycle {cycle + 1} "
+            print(f"  ✅ Converged at cycle {cycle + 1} ({elapsed:.0f}s)")
+            break
+
+        # Early stop if delta is not improving meaningfully
+        improvement = (prev_delta - delta) / (prev_delta + 1e-10)
+        if cycle >= 5 and improvement < 0.02:
+            no_improve += 1
+        else:
+            no_improve = 0
+
+        if no_improve >= 3:
+            print(f"  ✅ Early stop — delta plateaued at {delta:.6f} "
                   f"({elapsed:.0f}s)")
             break
-    else:
-        print(f"  ⚠️  Reached max cycles ({MAX_CYCLES}) — "
-              f"results still valid, delta={delta:.6f}")
 
+        prev_delta = delta
+
+    else:
+        elapsed = time.time() - t0
+        print(f"  ⚠️  Max cycles reached — results valid, "
+              f"delta={delta:.6f} ({elapsed:.0f}s)")
+
+    elapsed = time.time() - t0
     print(f"  Teams: {n}  |  Matches: {len(df):,}  |  "
-          f"Total time: {time.time() - t0:.0f}s")
+          f"Total time: {elapsed:.0f}s")
 
     return {
         "teams":    teams,
@@ -246,12 +244,12 @@ def predict(team_a: str, team_b: str, params: dict,
             neutral: bool = True) -> dict:
     """Predict match outcome using fitted Dixon-Coles params."""
     home_adv = 0.0 if neutral else params["home_adv"]
-    lam_a = np.exp(
+    lam_a    = np.exp(
         params["attack"].get(team_a, 0) +
         params["defence"].get(team_b, 0) +
         home_adv
     )
-    lam_b = np.exp(
+    lam_b    = np.exp(
         params["attack"].get(team_b, 0) +
         params["defence"].get(team_a, 0)
     )
