@@ -17,7 +17,7 @@ python run.py --mode train_ensemble
 
 echo ""
 echo "Step 3: Run simulation (100K iterations)"
-python run.py --mode simulate --n 100000
+python run.py --mode simulate --n 1000000
 
 echo ""
 echo "✅ Done. Launch dashboard with:"
