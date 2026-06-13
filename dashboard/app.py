@@ -193,7 +193,7 @@ if page == "Home":
     c1.metric("Teams", "48")
     c2.metric("Groups", "12")
     c3.metric("Matches", "104")
-    c4.metric("MC Iterations", "100,000")
+    c4.metric("MC Iterations", "1,000,000")
 
     st.divider()
 
